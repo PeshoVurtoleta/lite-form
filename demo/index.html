@@ -1,0 +1,2178 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>lite-form · headless reactive forms lab</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Space+Mono:wght@400;700&display=swap"
+          rel="stylesheet">
+    <style>
+        /* ─── Reset + tokens (consistent across @zakkster/lite-* demos) ─── */
+        *, *::before, *::after { box-sizing: border-box; }
+
+        :root {
+            --bg-0: #07090d;
+            --bg-1: #0d1117;
+            --bg-2: #131922;
+            --bg-3: #1a2230;
+            --line: rgba(255, 255, 255, 0.06);
+            --line-strong: rgba(255, 255, 255, 0.14);
+            --text: #d8d6d2;
+            --text-dim: #8b8d94;
+            --text-faint: #555960;
+            --green: #5fe39f;
+            --green-dim: #2b7a52;
+            --cyan: #7dd3fc;
+            --amber: #f5b942;
+            --magenta: #e879a8;
+            --red: #f87171;
+            --glow-green: 0 0 12px rgba(95, 227, 159, 0.6), 0 0 30px rgba(95, 227, 159, 0.25);
+            --glow-amber: 0 0 12px rgba(245, 185, 66, 0.6), 0 0 30px rgba(245, 185, 66, 0.2);
+            --glow-magenta: 0 0 12px rgba(232, 121, 168, 0.6), 0 0 30px rgba(232, 121, 168, 0.2);
+            --glow-red: 0 0 10px rgba(248, 113, 113, 0.5), 0 0 24px rgba(248, 113, 113, 0.18);
+        }
+
+        html, body { height: 100%; margin: 0; }
+
+        body {
+            font-family: 'JetBrains Mono', ui-monospace, monospace;
+            font-size: 13px; line-height: 1.5;
+            color: var(--text); background: var(--bg-0);
+            overflow: hidden;
+            font-feature-settings: "ss01", "ss02", "cv02", "cv11", "tnum";
+        }
+
+        body::before {
+            content: ""; position: fixed; inset: 0; pointer-events: none;
+            background-image:
+                radial-gradient(circle at 20% 0%, rgba(95, 227, 159, 0.04) 0%, transparent 40%),
+                radial-gradient(circle at 80% 100%, rgba(125, 211, 252, 0.03) 0%, transparent 50%);
+            z-index: 0;
+        }
+        body::after {
+            content: ""; position: fixed; inset: 0; pointer-events: none;
+            background: repeating-linear-gradient(0deg, transparent 0px, transparent 2px,
+                rgba(255, 255, 255, 0.012) 2px, rgba(255, 255, 255, 0.012) 3px);
+            z-index: 1;
+        }
+
+        #app { position: relative; z-index: 2; height: 100vh; display: flex; flex-direction: column; }
+
+        /* ─── Header ───────────────────────────────────────────────────── */
+        header.top {
+            display: flex; align-items: center; gap: 24px;
+            padding: 14px 24px;
+            border-bottom: 1px solid var(--line);
+            background: linear-gradient(to bottom, var(--bg-1), var(--bg-0));
+        }
+        .brand { display: flex; align-items: baseline; gap: 12px;
+                 font-family: 'Space Mono', 'JetBrains Mono', monospace; }
+        .brand .mark { color: var(--green); font-weight: 700; font-size: 16px;
+                       letter-spacing: -0.02em; text-shadow: var(--glow-green); }
+        .brand .pkg { color: var(--text); font-weight: 700; font-size: 15px;
+                      letter-spacing: -0.01em; }
+        .brand .ver { color: var(--text-faint); font-size: 11px; }
+
+        .tagline {
+            color: var(--text-dim); font-size: 11px; margin-left: auto;
+            letter-spacing: 0.04em; text-transform: uppercase;
+        }
+        .tagline .dot {
+            display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+            background: var(--green); box-shadow: var(--glow-green);
+            margin-right: 6px; vertical-align: 1px;
+            animation: pulse 1s steps(2) infinite;
+        }
+        @keyframes pulse { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0.3; } }
+
+        /* ─── Tab nav ──────────────────────────────────────────────────── */
+        nav.tabs {
+            display: flex; background: var(--bg-1);
+            border-bottom: 1px solid var(--line);
+            padding: 0 18px;
+        }
+        nav.tabs button {
+            background: none; border: 0;
+            color: var(--text-dim); font-family: inherit; font-size: 12px;
+            padding: 12px 18px; cursor: pointer; letter-spacing: 0.02em;
+            position: relative; transition: color .15s;
+        }
+        nav.tabs button:hover { color: var(--text); }
+        nav.tabs button[aria-current="true"] { color: var(--green); }
+        nav.tabs button[aria-current="true"]::after {
+            content: ""; position: absolute; left: 12px; right: 12px; bottom: -1px;
+            height: 2px; background: var(--green); box-shadow: var(--glow-green);
+        }
+        nav.tabs .scene-num { color: var(--text-faint); margin-right: 8px; font-weight: 300; }
+
+        /* ─── Scene container ──────────────────────────────────────────── */
+        main { flex: 1; min-height: 0; display: flex; position: relative; }
+        .scene { flex: 1; display: none; min-height: 0; }
+        .scene[data-active] { display: flex; }
+
+        .stage {
+            flex: 1; min-height: 0; position: relative; overflow: hidden;
+            background: radial-gradient(ellipse at center, rgba(95, 227, 159, 0.02), transparent 70%);
+        }
+
+        .panel {
+            width: 340px;
+            border-left: 1px solid var(--line);
+            background: var(--bg-1);
+            display: flex; flex-direction: column;
+            overflow-y: auto;
+        }
+        .panel .panel-head {
+            padding: 16px 20px 8px;
+            font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+            color: var(--text-faint);
+            border-bottom: 1px solid var(--line);
+        }
+        .panel section { padding: 16px 20px; border-bottom: 1px solid var(--line); }
+        .panel section h3 {
+            margin: 0 0 12px;
+            font-size: 10px; font-weight: 700;
+            letter-spacing: 0.16em; text-transform: uppercase;
+            color: var(--cyan);
+        }
+
+        /* ─── Inputs & buttons ─────────────────────────────────────────── */
+        button.btn {
+            font-family: inherit; font-size: 11px;
+            letter-spacing: 0.05em; text-transform: uppercase;
+            background: var(--bg-3); color: var(--text);
+            border: 1px solid var(--line-strong);
+            padding: 8px 14px; cursor: pointer;
+            transition: all .12s;
+        }
+        button.btn:hover { background: var(--bg-2); border-color: var(--green-dim); color: var(--green); }
+        button.btn.primary {
+            background: var(--green-dim); color: var(--bg-0);
+            border-color: var(--green); font-weight: 700;
+        }
+        button.btn.primary:hover { background: var(--green); color: var(--bg-0); }
+        button.btn.danger:hover { border-color: var(--red); color: var(--red); }
+        button.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-row { display: flex; gap: 6px; flex-wrap: wrap; }
+
+        .field { margin-bottom: 10px; }
+        .field label {
+            display: block; font-size: 10px;
+            letter-spacing: 0.08em; color: var(--text-faint);
+            text-transform: uppercase; margin-bottom: 4px;
+        }
+        .field input[type="range"] { width: 100%; accent-color: var(--green); }
+        .field select, .field input[type="number"], .field input[type="text"], .field input[type="password"] {
+            width: 100%; background: var(--bg-3);
+            border: 1px solid var(--line-strong);
+            color: var(--text); font-family: inherit; font-size: 12px;
+            padding: 6px 8px;
+        }
+        .field select:focus, .field input:focus { outline: 1px solid var(--green); }
+        .field-value { color: var(--green); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+        /* ─── Toggle ───────────────────────────────────────────────────── */
+        .toggle {
+            display: inline-flex; align-items: center; gap: 8px;
+            font-size: 11px; cursor: pointer;
+            user-select: none; padding: 4px 0;
+        }
+        .toggle input { display: none; }
+        .toggle .slot {
+            width: 32px; height: 18px;
+            background: var(--bg-3); border: 1px solid var(--line-strong);
+            border-radius: 10px; position: relative;
+            transition: background .15s, border-color .15s;
+        }
+        .toggle .slot::after {
+            content: ""; position: absolute;
+            top: 2px; left: 2px;
+            width: 12px; height: 12px;
+            background: var(--text-dim); border-radius: 50%;
+            transition: transform .15s, background .15s;
+        }
+        .toggle input:checked + .slot { background: var(--green-dim); border-color: var(--green); }
+        .toggle input:checked + .slot::after { background: var(--bg-0); transform: translateX(14px); }
+
+        /* ─── Metric tiles ─────────────────────────────────────────────── */
+        .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+        .metric { background: var(--bg-2); border: 1px solid var(--line); padding: 8px 10px; }
+        .metric .k { font-size: 9px; letter-spacing: 0.12em; color: var(--text-faint); text-transform: uppercase; }
+        .metric .v {
+            font-size: 16px; font-weight: 500; color: var(--text);
+            font-variant-numeric: tabular-nums; margin-top: 2px;
+        }
+        .metric .v.accent-green { color: var(--green); }
+        .metric .v.accent-cyan { color: var(--cyan); }
+        .metric .v.accent-amber { color: var(--amber); }
+        .metric .v.accent-magenta { color: var(--magenta); }
+        .metric .v.accent-red { color: var(--red); }
+
+        /* ─── Stage overlay ────────────────────────────────────────────── */
+        .stage-overlay {
+            position: absolute; pointer-events: none;
+            color: var(--text-dim); font-size: 11px; letter-spacing: 0.05em;
+            z-index: 4;
+        }
+        .stage-overlay.tl { top: 14px; left: 18px; }
+        .stage-overlay.tr { top: 14px; right: 18px; text-align: right; }
+        .stage-overlay.bl { bottom: 14px; left: 18px; }
+        .stage-overlay.br { bottom: 14px; right: 18px; text-align: right; }
+        .stage-overlay .big {
+            display: block; color: var(--green);
+            font-size: 22px; font-weight: 500;
+            font-variant-numeric: tabular-nums;
+            text-shadow: var(--glow-green);
+            letter-spacing: -0.01em;
+        }
+        .stage-overlay .label {
+            font-size: 9px; letter-spacing: 0.14em;
+            text-transform: uppercase; color: var(--text-faint);
+        }
+
+        canvas { display: block; width: 100%; height: 100%; }
+
+        /* ─── Scene 1: Form Builder (sign-up form, live) ──────────────── */
+        .builder-wrap {
+            position: absolute; inset: 0;
+            display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+            padding: 48px 32px 70px;
+            overflow: hidden;
+        }
+        .builder-form {
+            background: var(--bg-1);
+            border: 1px solid var(--line);
+            padding: 22px;
+            overflow-y: auto;
+        }
+        .builder-form .ff { margin-bottom: 14px; }
+        .builder-form .ff > label {
+            display: block;
+            font-size: 10px; letter-spacing: 0.1em;
+            color: var(--text-faint); text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        .builder-form .ff > input {
+            width: 100%;
+            background: var(--bg-0);
+            border: 1px solid var(--line);
+            color: var(--text); font-family: inherit; font-size: 13px;
+            padding: 8px 10px;
+            transition: border-color .15s;
+        }
+        .builder-form .ff > input:focus { outline: none; border-color: var(--green); }
+        .builder-form .ff.has-error > input { border-color: var(--red); }
+        .builder-form .ff .err {
+            font-size: 10px; color: var(--red);
+            min-height: 14px; margin-top: 4px;
+            font-variant-numeric: tabular-nums;
+        }
+        .builder-form .form-actions {
+            display: flex; gap: 8px; margin-top: 18px;
+        }
+        .builder-form .form-actions button {
+            font-family: inherit; font-size: 11px;
+            letter-spacing: 0.06em; text-transform: uppercase;
+            background: var(--bg-3); color: var(--text);
+            border: 1px solid var(--line-strong);
+            padding: 9px 18px; cursor: pointer;
+        }
+        .builder-form .form-actions button.submit {
+            background: var(--green-dim); color: var(--bg-0);
+            border-color: var(--green); font-weight: 700;
+            flex: 1;
+        }
+        .builder-form .form-actions button.submit:disabled {
+            background: var(--bg-3); color: var(--text-faint);
+            border-color: var(--line); cursor: not-allowed;
+        }
+        .builder-form h2 {
+            margin: 0 0 6px;
+            font-family: 'Space Mono', monospace;
+            font-size: 16px; font-weight: 700;
+            color: var(--green);
+        }
+        .builder-form .sub {
+            font-size: 10px; color: var(--text-dim);
+            margin-bottom: 18px; letter-spacing: 0.04em;
+        }
+        .builder-state {
+            background: var(--bg-1);
+            border: 1px solid var(--line);
+            padding: 18px 22px;
+            overflow-y: auto;
+            font-size: 11px;
+            line-height: 1.7;
+        }
+        .builder-state h3 {
+            margin: 0 0 10px;
+            font-size: 10px; font-weight: 700;
+            letter-spacing: 0.16em; text-transform: uppercase;
+            color: var(--cyan);
+        }
+        .builder-state .row {
+            display: grid; grid-template-columns: 92px 1fr 60px;
+            gap: 8px; align-items: center;
+            border-bottom: 1px solid var(--line);
+            padding: 4px 0;
+            font-variant-numeric: tabular-nums;
+        }
+        .builder-state .row:last-child { border-bottom: none; }
+        .builder-state .row .name { color: var(--text-faint); }
+        .builder-state .row .val { color: var(--text); word-break: break-all; min-height: 18px; }
+        .builder-state .row .badge {
+            text-align: center;
+            font-size: 9px; letter-spacing: 0.08em;
+            padding: 2px 6px;
+        }
+        .builder-state .row .badge.green { background: rgba(95, 227, 159, 0.14); color: var(--green); }
+        .builder-state .row .badge.red { background: rgba(248, 113, 113, 0.12); color: var(--red); }
+        .builder-state .row .badge.dim { color: var(--text-faint); }
+        .builder-state .pulse {
+            color: var(--green);
+            animation: pulseflash .35s ease-out;
+        }
+        @keyframes pulseflash {
+            0% { background: rgba(95, 227, 159, 0.25); }
+            100% { background: transparent; }
+        }
+        .builder-state .flags {
+            margin-top: 12px;
+            display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+        }
+        .builder-state .flag {
+            background: var(--bg-2); border: 1px solid var(--line);
+            padding: 6px 10px;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .builder-state .flag .l {
+            font-size: 9px; letter-spacing: 0.12em;
+            color: var(--text-faint); text-transform: uppercase;
+        }
+        .builder-state .flag .v {
+            font-variant-numeric: tabular-nums; font-weight: 700;
+        }
+        .builder-state .flag .v.on { color: var(--green); }
+        .builder-state .flag .v.off { color: var(--text-faint); }
+        .builder-state .console {
+            background: var(--bg-0);
+            border: 1px solid var(--line);
+            padding: 10px;
+            margin-top: 14px;
+            font-size: 10px;
+            font-variant-numeric: tabular-nums;
+            max-height: 140px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+        .builder-state .console .line { padding: 1px 0; }
+        .builder-state .console .line.green { color: var(--green); }
+        .builder-state .console .line.amber { color: var(--amber); }
+        .builder-state .console .line.red   { color: var(--red); }
+        .builder-state .console .line.dim   { color: var(--text-faint); }
+
+        /* ─── Scene 2: Validator Storm ────────────────────────────────── */
+        .storm-wrap {
+            position: absolute; inset: 0;
+            display: flex; flex-direction: column;
+            padding: 48px 24px 70px;
+            gap: 14px;
+        }
+        .storm-input-area {
+            display: flex; gap: 12px;
+            align-items: center;
+        }
+        .storm-input-area input {
+            flex: 1;
+            background: var(--bg-2);
+            border: 1px solid var(--line-strong);
+            color: var(--text); font-family: inherit; font-size: 13px;
+            padding: 10px 14px;
+        }
+        .storm-input-area input:focus { outline: 1px solid var(--green); }
+        .storm-input-area .hint {
+            font-size: 10px; color: var(--text-faint);
+            letter-spacing: 0.05em;
+            white-space: nowrap;
+        }
+        .storm-grid {
+            flex: 1; min-height: 0; overflow: auto;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 4px;
+            padding: 2px;
+        }
+        .storm-cell {
+            display: flex; flex-direction: column;
+            background: var(--bg-2);
+            border: 1px solid var(--line);
+            padding: 6px 8px;
+            min-height: 50px;
+            font-size: 11px;
+            font-variant-numeric: tabular-nums;
+            transition: border-color .25s, background .25s;
+        }
+        .storm-cell .lbl {
+            font-size: 9px;
+            letter-spacing: 0.06em;
+            color: var(--text-faint);
+            font-weight: 700;
+        }
+        .storm-cell .v { color: var(--text); font-weight: 500; }
+        .storm-cell .e { color: var(--text-faint); font-size: 9px; min-height: 12px; }
+        .storm-cell.f0 {
+            border-color: var(--green);
+            background: rgba(95, 227, 159, 0.04);
+        }
+        .storm-cell.has-error {
+            border-color: var(--red);
+            background: rgba(248, 113, 113, 0.04);
+        }
+        .storm-cell.has-error .e { color: var(--red); }
+        .storm-cell.flash {
+            border-color: var(--amber);
+            background: rgba(245, 185, 66, 0.08);
+            transition: none;
+        }
+
+        /* ─── Scene 3: Submit Wizard ──────────────────────────────────── */
+        .wizard-wrap {
+            position: absolute; inset: 0;
+            padding: 48px 32px 70px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            overflow: hidden;
+        }
+        .wizard-form, .wizard-trace {
+            background: var(--bg-1);
+            border: 1px solid var(--line);
+            padding: 20px;
+            overflow-y: auto;
+        }
+        .wizard-form h2, .wizard-trace h2 {
+            margin: 0 0 16px;
+            font-family: 'Space Mono', monospace;
+            font-size: 14px; font-weight: 700;
+            color: var(--cyan);
+            letter-spacing: 0.04em;
+        }
+        .wizard-form .ff { margin-bottom: 12px; }
+        .wizard-form .ff > label {
+            display: block;
+            font-size: 10px; letter-spacing: 0.08em;
+            color: var(--text-faint); text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        .wizard-form .ff > input, .wizard-form .ff > select {
+            width: 100%;
+            background: var(--bg-0);
+            border: 1px solid var(--line);
+            color: var(--text); font-family: inherit; font-size: 12px;
+            padding: 7px 9px;
+        }
+        .wizard-form .ff > input:focus, .wizard-form .ff > select:focus {
+            outline: none; border-color: var(--green);
+        }
+        .wizard-form .ff.has-error > input,
+        .wizard-form .ff.has-error > select { border-color: var(--red); }
+        .wizard-form .ff .err {
+            font-size: 10px; color: var(--red);
+            min-height: 14px; margin-top: 3px;
+        }
+        .wizard-form .submit-row {
+            margin-top: 18px;
+            display: flex; gap: 8px;
+        }
+        .wizard-form .submit-row button {
+            font-family: inherit; font-size: 11px;
+            letter-spacing: 0.06em; text-transform: uppercase;
+            background: var(--green-dim); color: var(--bg-0);
+            border: 1px solid var(--green); font-weight: 700;
+            padding: 9px 16px; cursor: pointer;
+        }
+        .wizard-form .submit-row button.alt {
+            background: var(--bg-3); color: var(--text);
+            border-color: var(--line-strong); font-weight: 400;
+        }
+        .wizard-form .submit-row button:disabled {
+            background: var(--bg-3); color: var(--text-faint);
+            border-color: var(--line); cursor: not-allowed;
+        }
+        .wizard-trace .trace-line {
+            font-size: 11px;
+            line-height: 1.7;
+            font-variant-numeric: tabular-nums;
+            border-bottom: 1px solid var(--line);
+            padding: 4px 0;
+        }
+        .wizard-trace .trace-line.green { color: var(--green); }
+        .wizard-trace .trace-line.amber { color: var(--amber); }
+        .wizard-trace .trace-line.red { color: var(--red); }
+        .wizard-trace .trace-line.dim { color: var(--text-faint); }
+        .wizard-trace .trace-line .t {
+            display: inline-block; width: 60px;
+            color: var(--text-faint); font-size: 9px;
+        }
+
+        /* ─── Scene 4: vs Hand-Written ────────────────────────────────── */
+        .vs-wrap {
+            position: absolute; inset: 0;
+            display: grid;
+            grid-template-rows: 1fr 1fr;
+        }
+        .vs-half {
+            position: relative;
+            border-bottom: 1px solid var(--line);
+            overflow: hidden;
+        }
+        .vs-half:last-child { border-bottom: 0; border-top: 1px solid var(--line); }
+        .vs-half .label-block {
+            position: absolute; top: 12px; left: 16px; z-index: 5;
+        }
+        .vs-half .label-block .name {
+            font-size: 13px; font-weight: 700; letter-spacing: 0.04em;
+        }
+        .vs-half .label-block .sub {
+            font-size: 10px; color: var(--text-dim);
+            letter-spacing: 0.06em; margin-top: 2px;
+        }
+        .vs-half .stat-block {
+            position: absolute; top: 12px; right: 16px; z-index: 5;
+            text-align: right; font-variant-numeric: tabular-nums;
+        }
+        .vs-half .stat-block .big {
+            font-size: 22px; font-weight: 500;
+            letter-spacing: -0.01em; text-shadow: 0 0 8px currentColor;
+        }
+        .vs-half .stat-block .sub {
+            font-size: 10px; color: var(--text-dim); margin-top: 2px;
+            letter-spacing: 0.06em; text-transform: uppercase;
+        }
+        .vs-half.lite { color: var(--green); }
+        .vs-half.naive { color: var(--magenta); }
+
+        /* ─── Help ─────────────────────────────────────────────────────── */
+        .help-line {
+            font-size: 10px; color: var(--text-faint);
+            margin-top: 8px; line-height: 1.6;
+        }
+        .help-line code {
+            background: var(--bg-3); padding: 1px 5px;
+            color: var(--green); font-family: inherit; font-size: 10px;
+        }
+        .help-line strong { color: var(--text); font-weight: 700; }
+
+        /* ─── Telemetry strip ──────────────────────────────────────────── */
+        footer.telemetry {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            border-top: 1px solid var(--line);
+            background: var(--bg-1);
+        }
+        .tele {
+            padding: 10px 16px;
+            border-right: 1px solid var(--line);
+            display: flex; flex-direction: column; gap: 2px;
+        }
+        .tele:last-child { border-right: 0; }
+        .tele .k { font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-faint); }
+        .tele .v {
+            font-size: 16px; font-weight: 500;
+            font-variant-numeric: tabular-nums; color: var(--text);
+        }
+        .tele .v.accent { color: var(--green); }
+
+        main::after {
+            content: ""; position: absolute; inset: 0;
+            pointer-events: none;
+            box-shadow: inset 0 0 60px rgba(0, 0, 0, 0.6);
+        }
+
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-thumb { background: var(--bg-3); }
+        ::-webkit-scrollbar-track { background: var(--bg-1); }
+
+        /* ─── Warning banner ───────────────────────────────────────────── */
+        .warn-banner {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            background: var(--bg-2);
+            border: 1px solid var(--red);
+            padding: 16px 22px;
+            color: var(--text);
+            font-size: 12px;
+            max-width: 480px;
+            text-align: center;
+            display: none;
+            z-index: 10;
+            box-shadow: 0 4px 24px rgba(248, 113, 113, 0.2);
+        }
+        .warn-banner[data-active] { display: block; }
+        .warn-banner .label {
+            font-size: 9px; letter-spacing: 0.16em;
+            text-transform: uppercase; color: var(--red);
+            margin-bottom: 6px; font-weight: 700;
+        }
+    </style>
+</head>
+<body>
+
+<!-- Import map so '@zakkster/lite-signal' resolves in the browser. -->
+<script type="importmap">
+{
+  "imports": {
+    "@zakkster/lite-signal": "https://cdn.jsdelivr.net/npm/@zakkster/lite-signal@1.1.3/Signal.js"
+  }
+}
+</script>
+
+<div id="app">
+
+    <header class="top">
+        <div class="brand">
+            <span class="mark">▦</span>
+            <span class="pkg">@zakkster/lite-form</span>
+            <span class="ver">v1.0.0</span>
+        </div>
+        <div class="tagline"><span class="dot"></span>headless reactive forms · one validator per keystroke</div>
+    </header>
+
+    <nav class="tabs" id="tabs">
+        <button data-tab="builder" aria-current="true"><span class="scene-num">01</span>Form Builder</button>
+        <button data-tab="storm"><span class="scene-num">02</span>Validator Storm</button>
+        <button data-tab="wizard"><span class="scene-num">03</span>Submit Wizard</button>
+        <button data-tab="vs"><span class="scene-num">04</span>vs Hand-Written</button>
+    </nav>
+
+    <main>
+
+        <!-- ═══════════ SCENE 1: FORM BUILDER ═══════════ -->
+        <section class="scene" data-scene="builder" data-active>
+            <div class="stage" id="builder-stage">
+                <div class="builder-wrap">
+                    <div class="builder-form">
+                        <h2>sign-up</h2>
+                        <div class="sub">a live lite-form. Type into any field. The right panel reflects every signal in real time.</div>
+                        <div class="ff" id="ff-email">
+                            <label>email</label>
+                            <input type="text" id="i-email" placeholder="you@example.com" autocomplete="off">
+                            <div class="err"></div>
+                        </div>
+                        <div class="ff" id="ff-username">
+                            <label>username</label>
+                            <input type="text" id="i-username" placeholder="3–20 lowercase letters/digits" autocomplete="off">
+                            <div class="err"></div>
+                        </div>
+                        <div class="ff" id="ff-password">
+                            <label>password</label>
+                            <input type="password" id="i-password" placeholder="min 8 chars">
+                            <div class="err"></div>
+                        </div>
+                        <div class="ff" id="ff-confirm">
+                            <label>confirm password</label>
+                            <input type="password" id="i-confirm" placeholder="repeat">
+                            <div class="err"></div>
+                        </div>
+                        <div class="ff" id="ff-age">
+                            <label>age</label>
+                            <input type="text" id="i-age" placeholder="≥ 18" autocomplete="off">
+                            <div class="err"></div>
+                        </div>
+                        <div class="form-actions">
+                            <button class="submit" id="builder-submit" disabled>submit</button>
+                            <button id="builder-reset">reset</button>
+                        </div>
+                    </div>
+
+                    <div class="builder-state">
+                        <h3>reactive state</h3>
+                        <div id="builder-rows"></div>
+                        <div class="flags">
+                            <div class="flag"><span class="l">isValid</span><span class="v off" id="bf-valid">false</span></div>
+                            <div class="flag"><span class="l">isDirty</span><span class="v off" id="bf-dirty">false</span></div>
+                            <div class="flag"><span class="l">submitAttempted</span><span class="v off" id="bf-attempt">false</span></div>
+                            <div class="flag"><span class="l">isSubmitting</span><span class="v off" id="bf-subm">false</span></div>
+                        </div>
+                        <h3 style="margin-top:18px">validation runs</h3>
+                        <div class="flags">
+                            <div class="flag"><span class="l">total this session</span><span class="v" id="bf-runs-total">0</span></div>
+                            <div class="flag"><span class="l">last keystroke ran</span><span class="v" id="bf-runs-last">0</span></div>
+                        </div>
+                        <h3 style="margin-top:18px">submit console</h3>
+                        <div class="console" id="builder-console"></div>
+                    </div>
+                </div>
+            </div>
+
+            <aside class="panel">
+                <div class="panel-head">scene 01 · form builder</div>
+                <section>
+                    <h3>what you're looking at</h3>
+                    <p class="help-line">
+                        A working sign-up form built with <code>createForm</code>.
+                        Five fields, four validators, one cross-field rule (<code>confirm</code>
+                        depends on <code>password</code> via <code>ctx.get</code>).
+                        <br><br>
+                        Type into any field — the right panel shows every reactive read
+                        firing. The <strong>last keystroke ran</strong> counter is the
+                        headline: typing in one field runs exactly <strong>one</strong>
+                        validator, regardless of how many other fields have validators.
+                    </p>
+                </section>
+                <section>
+                    <h3>what to try</h3>
+                    <p class="help-line">
+                        Type <code>"x"</code> into email → "invalid email" appears.<br>
+                        Type more letters → the error stays "invalid email" and the row
+                        <em>doesn't flash</em> in the state panel — that's the
+                        <strong>Object.is cutoff</strong> not propagating to the DOM
+                        because the message hasn't changed.<br><br>
+                        Type a valid email → error clears once.<br>
+                        Keep typing → no further renders (allocation-free).
+                        <br><br>
+                        Submit while invalid → all errors reveal at once
+                        (<code>submitAttempted</code> flips). Submit when valid → the
+                        console logs a fake API call.
+                    </p>
+                </section>
+                <section>
+                    <h3>config used</h3>
+                    <div class="metrics">
+                        <div class="metric">
+                            <div class="k">fields</div>
+                            <div class="v accent-cyan">5</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">validators</div>
+                            <div class="v accent-cyan">4</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">cross-field</div>
+                            <div class="v accent-cyan">1</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">validateOn</div>
+                            <div class="v accent-cyan">"change"</div>
+                        </div>
+                    </div>
+                </section>
+            </aside>
+        </section>
+
+        <!-- ═══════════ SCENE 2: VALIDATOR STORM ═══════════ -->
+        <section class="scene" data-scene="storm">
+            <div class="stage" id="storm-stage">
+                <div class="storm-wrap">
+                    <div class="storm-input-area">
+                        <input type="text" id="storm-input" placeholder="type here to watch only f0 validate">
+                        <span class="hint">↑ this is field <strong style="color:var(--green)">f0</strong></span>
+                    </div>
+                    <div class="storm-grid" id="storm-grid"></div>
+                </div>
+                <div class="stage-overlay tl">
+                    <span class="label">validator runs this keystroke</span>
+                    <span class="big" id="storm-runs">0</span>
+                </div>
+                <div class="stage-overlay tr">
+                    <span class="label">activeNodes · should be N×4 + 5</span>
+                    <span class="big" id="storm-active">0</span>
+                </div>
+                <div class="stage-overlay br">
+                    <span class="label">green = f0 · amber flash = bind write · red border = error shown</span>
+                </div>
+                <div class="warn-banner" id="storm-warn">
+                    <div class="label">capacity</div>
+                    <div id="storm-warn-msg"></div>
+                </div>
+            </div>
+
+            <aside class="panel">
+                <div class="panel-head">scene 02 · validator storm</div>
+                <section>
+                    <h3>what this shows</h3>
+                    <p class="help-line">
+                        A form with N fields, each with its own per-field validator AND
+                        a "render" subscriber. Type into <strong>f0</strong> only.
+                        <br><br>
+                        Watch the top-left counter: it stays at <strong>1</strong>
+                        no matter what you type, no matter how many fields exist.
+                        The other N−1 validators are <em>not called</em> — their
+                        <code>error()</code> computeds short-circuit on the reveal
+                        gate before reading <code>rawError</code>.
+                        <br><br>
+                        This is why typing in one field of a 100-field form is O(1).
+                    </p>
+                </section>
+                <section>
+                    <h3>topology</h3>
+                    <div class="field">
+                        <label>fields N · <span class="field-value" id="storm-N-v">100</span></label>
+                        <input type="range" id="storm-N" min="20" max="200" value="100" step="10">
+                    </div>
+                    <div class="field">
+                        <label>validation mode</label>
+                        <select id="storm-mode">
+                            <option value="perfield" selected>per-field validators (each gets its own)</option>
+                            <option value="schema">form-level schema (hoisted, runs 1× per keystroke)</option>
+                        </select>
+                    </div>
+                    <div class="btn-row">
+                        <button class="btn primary" id="storm-rebuild">▶ rebuild form</button>
+                        <button class="btn" id="storm-reveal">reveal all errors</button>
+                        <button class="btn" id="storm-reset">reset</button>
+                    </div>
+                </section>
+                <section>
+                    <h3>live</h3>
+                    <div class="metrics">
+                        <div class="metric">
+                            <div class="k">total keystrokes</div>
+                            <div class="v accent-cyan" id="storm-k">0</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">total validator runs</div>
+                            <div class="v accent-amber" id="storm-runs-total">0</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">schema runs</div>
+                            <div class="v accent-magenta" id="storm-schema-runs">0</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">isValid</div>
+                            <div class="v accent-green" id="storm-isvalid">false</div>
+                        </div>
+                    </div>
+                    <p class="help-line">
+                        <strong>per-field</strong> mode: <em>total runs</em> ≈ <em>total keystrokes</em>
+                        (1 per keystroke, no matter how big N gets).<br>
+                        <strong>schema</strong> mode: same — but <em>schema runs</em>
+                        also tracks the hoisted single computed, which fires exactly
+                        once per change regardless of N.
+                    </p>
+                </section>
+            </aside>
+        </section>
+
+        <!-- ═══════════ SCENE 3: SUBMIT WIZARD ═══════════ -->
+        <section class="scene" data-scene="wizard">
+            <div class="stage" id="wizard-stage">
+                <div class="wizard-wrap">
+                    <div class="wizard-form">
+                        <h2>checkout · async submit demo</h2>
+                        <div class="ff" id="wf-email">
+                            <label>email</label>
+                            <input type="text" id="w-email" placeholder="you@example.com" autocomplete="off">
+                            <div class="err"></div>
+                        </div>
+                        <div class="ff" id="wf-card">
+                            <label>card (16 digits, demo: type "4242…")</label>
+                            <input type="text" id="w-card" placeholder="4242 4242 4242 4242" autocomplete="off">
+                            <div class="err"></div>
+                        </div>
+                        <div class="ff" id="wf-amount">
+                            <label>amount ($)</label>
+                            <input type="text" id="w-amount" placeholder="1–9999" autocomplete="off">
+                            <div class="err"></div>
+                        </div>
+                        <div class="ff" id="wf-outcome">
+                            <label>simulated server outcome</label>
+                            <select id="w-outcome">
+                                <option value="ok">200 OK</option>
+                                <option value="network">network failure (TypeError)</option>
+                                <option value="server">500 server error (Error)</option>
+                                <option value="bug">structural bug (ReferenceError) — re-throws</option>
+                            </select>
+                            <div class="err"></div>
+                        </div>
+                        <div class="submit-row">
+                            <button id="w-submit" disabled>charge</button>
+                            <button class="alt" id="w-reset">reset</button>
+                            <button class="alt" id="w-attempt">force reveal</button>
+                        </div>
+                    </div>
+
+                    <div class="wizard-trace">
+                        <h2>submit lifecycle trace</h2>
+                        <div id="trace-log"></div>
+                        <div class="trace-line dim" style="margin-top:20px;border:none;font-size:10px">
+                            steps shown:<br>
+                            1. ev.preventDefault() · 2. submitAttempted ← true (reveals all errors) ·
+                            3. isValid check · 4. isSubmitting ← true · 5. await onSubmit(values()) ·
+                            6. on throw: classify (ReferenceError ⇒ re-throw, others ⇒ submitError) ·
+                            7. isSubmitting ← false
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <aside class="panel">
+                <div class="panel-head">scene 03 · submit wizard</div>
+                <section>
+                    <h3>what this shows</h3>
+                    <p class="help-line">
+                        The full <code>submit()</code> lifecycle, narrated.
+                        Pick a simulated server outcome on the form, hit "charge"
+                        with any data — the right column traces every state transition.
+                        <br><br>
+                        Notice: a <strong>ReferenceError</strong> thrown inside
+                        <code>onSubmit</code> is re-thrown (it's a structural bug, not
+                        a submission outcome). A <strong>TypeError</strong> (fetch
+                        network failure) is captured as <code>submitError</code> —
+                        same for any plain <code>Error</code>.
+                    </p>
+                </section>
+                <section>
+                    <h3>edge cases</h3>
+                    <p class="help-line">
+                        <strong>Force reveal</strong> sets <code>submitAttempted = true</code>
+                        directly. Useful for "are you sure?" preview steps that need
+                        to highlight invalid fields before the real submit.
+                        <br><br>
+                        <strong>Reset</strong> wipes touched, dirty, submitAttempted,
+                        AND submitError in one batched update.
+                        <br><br>
+                        Submit while invalid → blocked synchronously, <em>onSubmit
+                        never runs</em>. Try it: empty the email and click charge.
+                    </p>
+                </section>
+                <section>
+                    <h3>live</h3>
+                    <div class="metrics">
+                        <div class="metric">
+                            <div class="k">submits attempted</div>
+                            <div class="v accent-cyan" id="w-attempts">0</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">submits succeeded</div>
+                            <div class="v accent-green" id="w-succ">0</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">submits blocked</div>
+                            <div class="v accent-amber" id="w-blk">0</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">submits errored</div>
+                            <div class="v accent-red" id="w-err">0</div>
+                        </div>
+                    </div>
+                </section>
+            </aside>
+        </section>
+
+        <!-- ═══════════ SCENE 4: vs HAND-WRITTEN ═══════════ -->
+        <section class="scene" data-scene="vs">
+            <div class="stage" id="vs-stage">
+                <div class="vs-wrap">
+                    <div class="vs-half lite">
+                        <div class="label-block">
+                            <div class="name">lite-form × <span id="vs-N-disp1">100</span> fields</div>
+                            <div class="sub">typing runs <strong>1</strong> validator per keystroke (cached cutoff)</div>
+                        </div>
+                        <div class="stat-block">
+                            <div class="big" id="vs-lite-stat">— µs</div>
+                            <div class="sub">avg per keystroke</div>
+                        </div>
+                        <canvas id="vs-lite-canvas"></canvas>
+                    </div>
+                    <div class="vs-half naive">
+                        <div class="label-block">
+                            <div class="name">hand-written × <span id="vs-N-disp2">100</span> fields</div>
+                            <div class="sub">no caching — every keystroke runs ALL N validators + notifies all subscribers</div>
+                        </div>
+                        <div class="stat-block">
+                            <div class="big" id="vs-naive-stat">— µs</div>
+                            <div class="sub">avg per keystroke</div>
+                        </div>
+                        <canvas id="vs-naive-canvas"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <aside class="panel">
+                <div class="panel-head">scene 04 · vs hand-written</div>
+                <section>
+                    <h3>what this shows</h3>
+                    <p class="help-line">
+                        Both panels do the same workload: N fields each with a
+                        validator, then 5000 simulated keystrokes per tick on one field.
+                        <br><br>
+                        <span style="color:var(--green)">Green</span> uses lite-form.
+                        Only f0's validator runs per keystroke.
+                        <br>
+                        <span style="color:var(--magenta)">Magenta</span> is a
+                        handwritten <code>setValue</code> that re-runs every validator
+                        and notifies every subscriber on every change — the pattern
+                        Formik defaults to.
+                        <br><br>
+                        Charts plot <strong>microseconds per keystroke</strong>. Lower
+                        is better. The handwritten line scales with N; lite-form's
+                        is flat.
+                    </p>
+                </section>
+                <section>
+                    <h3>control</h3>
+                    <div class="field">
+                        <label>fields per side · <span class="field-value" id="vs-N-v">100</span></label>
+                        <input type="range" id="vs-N" min="20" max="300" value="100" step="10">
+                    </div>
+                    <div class="btn-row">
+                        <button class="btn primary" id="vs-run">▶ run keystroke storm</button>
+                        <button class="btn danger" id="vs-stop" disabled>■ stop</button>
+                        <button class="btn" id="vs-clear">clear</button>
+                    </div>
+                    <p class="help-line">
+                        Each tick fires 5000 keystrokes against each side and times
+                        them. Increase N to see the handwritten line climb while the
+                        lite-form line stays put.
+                    </p>
+                </section>
+                <section>
+                    <h3>live</h3>
+                    <div class="metrics">
+                        <div class="metric">
+                            <div class="k">lite ticks</div>
+                            <div class="v accent-green" id="vs-lite-n">0</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">naive ticks</div>
+                            <div class="v accent-magenta" id="vs-naive-n">0</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">speedup (avg)</div>
+                            <div class="v accent-green" id="vs-speedup">— ×</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">activeNodes</div>
+                            <div class="v" id="vs-active">0</div>
+                        </div>
+                    </div>
+                </section>
+            </aside>
+        </section>
+
+    </main>
+
+    <footer class="telemetry">
+        <div class="tele"><span class="k">version</span><span class="v">1.0.0</span></div>
+        <div class="tele"><span class="k">lite-signal</span><span class="v accent">1.1.3</span></div>
+        <div class="tele"><span class="k">activeNodes</span><span class="v" id="t-active">0</span></div>
+        <div class="tele"><span class="k">heap</span><span class="v" id="t-heap">— MB</span></div>
+        <div class="tele"><span class="k">fps</span><span class="v" id="t-fps">—</span></div>
+        <div class="tele"><span class="k">status</span><span class="v accent" id="t-status">ready</span></div>
+    </footer>
+
+</div>
+
+<!-- =============================================================== -->
+<!-- DEMO LOGIC                                                       -->
+<!-- =============================================================== -->
+<script type="module">
+    import { createForm } from '../Form.js';
+    import { stats, effect, createRegistry } from '@zakkster/lite-signal';
+
+    // ─── Module-level constants ───────────────────────────────────────
+    // Hoisted once so canvas C++ bindings don't have to reparse strings per draw.
+    const $ = id => document.getElementById(id);
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+
+    const COLOR_GRID     = "rgba(255,255,255,0.04)";
+    const COLOR_LBL_DIM  = "rgba(255,255,255,0.35)";
+    const COLOR_LITE     = "#5fe39f";
+    const COLOR_MAGENTA  = "#e879a8";
+    const FONT_TINY      = "9px 'JetBrains Mono', monospace";
+    const FONT_HINT      = "11px 'JetBrains Mono', monospace";
+
+    // ─── Helpers ─────────────────────────────────────────────────────
+    function sizeCanvas(c) {
+        const r = c.getBoundingClientRect();
+        c.width = Math.floor(r.width * dpr);
+        c.height = Math.floor(r.height * dpr);
+        const ctx = c.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        return { ctx, w: r.width, h: r.height };
+    }
+
+    // Zero-GC formatter: avoids V8's NumberFormat / toFixed pipeline by
+    // shifting decimals with pure integer math. Each call allocates exactly
+    // ONE string (the result), never the intermediate "1.50" that toFixed
+    // creates and then immediately orphans to GC.
+    function fmtNum(n) {
+        if (!isFinite(n)) return "—";
+        if (n >= 1e6) {
+            // 2 decimal places: divide by 10,000, round, divide by 100.
+            // e.g. 1,567,000 → 156.7 → 1.567 → 1.57 final.
+            return (Math.round(n / 10000) / 100) + "M";
+        }
+        if (n >= 1e3) {
+            return (Math.round(n / 100) / 10) + "K";
+        }
+        // V8 has a fast path for String(integer) — no NumberFormat pipeline.
+        return String(Math.round(n));
+    }
+
+    function mem() {
+        return (performance.memory && performance.memory.usedJSHeapSize) || 0;
+    }
+
+    // ─── Global telemetry (diff-guarded; integer-tenths for heap) ────
+    let lastActive = -1;
+    let lastHeapDeci = -1;
+    let lastFps = -1;
+    let frameCount = 0;
+    let frameWindowStart = performance.now();
+
+    function telemetryLoop() {
+        const a = stats().activeNodes;
+        if (a !== lastActive) {
+            lastActive = a;
+            $("t-active").textContent = a;
+        }
+        const m = mem();
+        if (m) {
+            const deci = Math.round(m / 104857.6);
+            if (deci !== lastHeapDeci) {
+                lastHeapDeci = deci;
+                $("t-heap").textContent =
+                    // Integer math instead of toFixed: deci is already
+                    // tenths (e.g. 156 = 15.6 MB). Shift decimals with
+                    // div/mod, concatenate once.
+                    Math.floor(deci / 10) + "." + (deci % 10) + " MB";
+            }
+        }
+        frameCount++;
+        const now = performance.now();
+        if (now - frameWindowStart >= 500) {
+            const fps = Math.round((frameCount * 1000) / (now - frameWindowStart));
+            if (fps !== lastFps) {
+                lastFps = fps;
+                $("t-fps").textContent = fps;
+            }
+            frameCount = 0;
+            frameWindowStart = now;
+        }
+        requestAnimationFrame(telemetryLoop);
+    }
+    requestAnimationFrame(telemetryLoop);
+
+    // ─── Tab routing ─────────────────────────────────────────────────
+    const tabs = $("tabs");
+    const SCENE_SHOW = {};
+    tabs.addEventListener("click", e => {
+        const b = e.target.closest("button[data-tab]");
+        if (!b) return;
+        const tab = b.dataset.tab;
+        for (const btn of tabs.querySelectorAll("button"))
+            btn.setAttribute("aria-current", btn === b ? "true" : "false");
+        for (const sc of document.querySelectorAll(".scene")) {
+            if (sc.dataset.scene === tab) sc.setAttribute("data-active", "");
+            else sc.removeAttribute("data-active");
+        }
+        const fn = SCENE_SHOW[tab];
+        if (fn) fn();
+    });
+
+    // ══════════════════════════════════════════════════════════════════
+    // SCENE 1 — FORM BUILDER
+    // ══════════════════════════════════════════════════════════════════
+    {
+        let validatorRuns = 0;
+        let validatorRunsLastTick = 0;
+        const tick = () => { validatorRunsLastTick = 0; };
+
+        // We wrap each validator so we can count its calls. Reset the
+        // per-keystroke counter on input events (before lite-form sees them).
+        function counted(name, fn) {
+            return (v, ctx) => {
+                validatorRuns++;
+                validatorRunsLastTick++;
+                return fn(v, ctx);
+            };
+        }
+
+        const form = createForm({
+            initialValues: { email: "", username: "", password: "", confirm: "", age: "" },
+            validators: {
+                email: counted("email", v => /@/.test(v) && /\./.test(v) ? null : "invalid email"),
+                username: counted("username", v => {
+                    if (!v) return "required";
+                    if (!/^[a-z0-9]+$/.test(v)) return "lowercase letters/digits only";
+                    if (v.length < 3) return "too short (min 3)";
+                    if (v.length > 20) return "too long (max 20)";
+                    return null;
+                }),
+                password: counted("password", v => v.length >= 8 ? null : "min 8 chars"),
+                confirm: counted("confirm", (v, { get }) => v === get("password") ? null : "must match password"),
+                age: counted("age", v => {
+                    if (!v) return "required";
+                    const n = Number(v);
+                    if (!Number.isFinite(n)) return "must be a number";
+                    if (n < 18) return "must be ≥ 18";
+                    if (n > 130) return "really?";
+                    return null;
+                }),
+            },
+            onSubmit: async (vals) => {
+                logConsole("→ POST /api/signup", "amber");
+                logConsole("  body: " + JSON.stringify(vals), "dim");
+                // Fake network latency
+                await new Promise(r => setTimeout(r, 600));
+                logConsole("← 201 Created · welcome, " + vals.username, "green");
+            },
+        });
+
+        const FIELD_NAMES = ["email", "username", "password", "confirm", "age"];
+        const INPUTS = {};
+        const ERROR_ELS = {};
+        const FF_ELS = {};
+        for (const name of FIELD_NAMES) {
+            INPUTS[name] = $("i-" + name);
+            ERROR_ELS[name] = $("ff-" + name).querySelector(".err");
+            FF_ELS[name] = $("ff-" + name);
+        }
+
+        // ─── Wire inputs → form ───
+        for (const name of FIELD_NAMES) {
+            INPUTS[name].addEventListener("input", (ev) => {
+                tick();                                  // reset per-keystroke counter
+                form.field(name).set(ev.target.value);
+            });
+            INPUTS[name].addEventListener("blur", () => form.field(name).blur());
+        }
+
+        // ─── State panel rendering (diff-guarded) ───
+        // IMPORTANT: this block MUST come before the effect loop below, because
+        // `effect()` runs its callback synchronously to map initial dependencies,
+        // and that callback reads `rowEls` via `paintRow`. Declaring rowEls
+        // after the effect would put it in the Temporal Dead Zone → ReferenceError.
+        const rowsEl = $("builder-rows");
+        const rowEls = {};
+        for (const name of FIELD_NAMES) {
+            const row = document.createElement("div");
+            row.className = "row";
+            row.innerHTML =
+                `<span class="name">${name}</span>` +
+                `<span class="val">""</span>` +
+                `<span class="badge dim">·</span>`;
+            rowsEl.appendChild(row);
+            rowEls[name] = {
+                row,
+                val: row.children[1],
+                badge: row.children[2],
+                lastVal: "\u0000",
+                lastBadge: "\u0000",
+                lastBadgeCls: "",
+            };
+        }
+
+        function paintRow(name, value, error, dirty, touched) {
+            const r = rowEls[name];
+            const vText = value === "" ? '""' : JSON.stringify(value);
+            if (vText !== r.lastVal) {
+                r.lastVal = vText;
+                r.val.textContent = vText;
+                // Pulse the cell on change. Web Animations API runs entirely
+                // on the compositor thread — no forced reflow (which would be
+                // `void r.row.offsetWidth`), no GC pressure from class churn,
+                // no @keyframes restart hack.
+                r.row.animate(
+                    [
+                        { backgroundColor: "rgba(95, 227, 159, 0.25)" },
+                        { backgroundColor: "transparent" },
+                    ],
+                    { duration: 350, easing: "ease-out" },
+                );
+            }
+            let badgeText, badgeCls;
+            if (error) { badgeText = "✗"; badgeCls = "badge red"; }
+            else if (dirty) { badgeText = "✓"; badgeCls = "badge green"; }
+            else { badgeText = "·"; badgeCls = "badge dim"; }
+            if (badgeText !== r.lastBadge) {
+                r.lastBadge = badgeText;
+                r.badge.textContent = badgeText;
+            }
+            if (badgeCls !== r.lastBadgeCls) {
+                r.lastBadgeCls = badgeCls;
+                r.badge.className = badgeCls;
+            }
+        }
+
+        // ─── Wire form → DOM (each via its own effect — fine-grained) ───
+        // Cached lastX per field so we only touch the DOM on actual change.
+        const lastError = {};
+        const lastValue = {};
+        const lastClass = {};
+        for (const name of FIELD_NAMES) {
+            lastError[name] = "\u0000";       // unequal to any real value
+            lastValue[name] = "\u0000";
+            lastClass[name] = false;
+            effect(() => {
+                const f = form.field(name);
+                const v = f.value();
+                if (v !== lastValue[name]) {
+                    lastValue[name] = v;
+                    // Don't overwrite the input while focused (would break IME)
+                    if (document.activeElement !== INPUTS[name]) {
+                        INPUTS[name].value = v;
+                    }
+                }
+                const e = f.error();
+                if (e !== lastError[name]) {
+                    lastError[name] = e;
+                    ERROR_ELS[name].textContent = e || "";
+                    const hasErr = !!e;
+                    if (hasErr !== lastClass[name]) {
+                        lastClass[name] = hasErr;
+                        FF_ELS[name].classList.toggle("has-error", hasErr);
+                    }
+                }
+                paintRow(name, v, e, f.dirty(), f.touched());
+            });
+        }
+
+        // ─── Top-level flags (each is its own effect for fine-grain) ───
+        function bindFlag(elId, sig, onText, offText) {
+            const el = $(elId);
+            let last = "\u0000";
+            effect(() => {
+                const v = sig();
+                const text = v ? onText : offText;
+                if (text !== last) {
+                    last = text;
+                    el.textContent = text;
+                    el.className = "v " + (v ? "on" : "off");
+                }
+            });
+        }
+        bindFlag("bf-valid", form.isValid, "true", "false");
+        bindFlag("bf-dirty", form.isDirty, "true", "false");
+        bindFlag("bf-attempt", form.submitAttempted, "true", "false");
+        bindFlag("bf-subm", form.isSubmitting, "true", "false");
+
+        // Validation-run counters
+        let lastTotalRuns = -1, lastLastRuns = -1;
+        function paintRunCounts() {
+            if (validatorRuns !== lastTotalRuns) {
+                lastTotalRuns = validatorRuns;
+                $("bf-runs-total").textContent = String(validatorRuns);
+            }
+            if (validatorRunsLastTick !== lastLastRuns) {
+                lastLastRuns = validatorRunsLastTick;
+                $("bf-runs-last").textContent = String(validatorRunsLastTick);
+            }
+        }
+        // Driven by user input — no rAF polling.
+        for (const name of FIELD_NAMES) {
+            INPUTS[name].addEventListener("input", () => {
+                // Wait one microtask so lite-form's chain has propagated and
+                // our validators have run before we read the counter.
+                queueMicrotask(paintRunCounts);
+            });
+        }
+
+        // Submit button is reactive on form.isValid + isSubmitting
+        const submitBtn = $("builder-submit");
+        effect(() => {
+            const can = form.isValid() && !form.isSubmitting();
+            const should = !can;
+            if (submitBtn.disabled !== should) submitBtn.disabled = should;
+            const wantTxt = form.isSubmitting() ? "submitting…" : "submit";
+            if (submitBtn.textContent !== wantTxt) submitBtn.textContent = wantTxt;
+        });
+
+        submitBtn.addEventListener("click", async () => {
+            logConsole("submit clicked", "dim");
+            const ok = await form.submit();
+            if (!ok) {
+                logConsole("blocked — fields invalid", "red");
+            }
+            paintRunCounts();
+        });
+        $("builder-reset").addEventListener("click", () => {
+            form.reset();
+            for (const name of FIELD_NAMES) INPUTS[name].value = "";
+            logConsole("reset", "dim");
+        });
+
+        // ─── Console ───
+        const consoleEl = $("builder-console");
+        function logConsole(msg, cls) {
+            const line = document.createElement("div");
+            line.className = "line " + (cls || "");
+            const t = new Date();
+            line.textContent = `${String(t.getHours()).padStart(2,"0")}:${String(t.getMinutes()).padStart(2,"0")}:${String(t.getSeconds()).padStart(2,"0")}.${String(t.getMilliseconds()).padStart(3,"0")} ${msg}`;
+            consoleEl.appendChild(line);
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+            // Cap to last 200 lines so this can run forever without growth.
+            while (consoleEl.children.length > 200) consoleEl.removeChild(consoleEl.firstChild);
+        }
+        logConsole("createForm({ 5 fields, 4 validators, 1 cross-field })", "dim");
+        SCENE_SHOW.builder = () => { /* nothing to refresh */ };
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // SCENE 2 — VALIDATOR STORM
+    // ══════════════════════════════════════════════════════════════════
+    {
+        const dom = {
+            input: $("storm-input"),
+            grid: $("storm-grid"),
+            N: $("storm-N"),
+            Nv: $("storm-N-v"),
+            mode: $("storm-mode"),
+            rebuild: $("storm-rebuild"),
+            reveal: $("storm-reveal"),
+            reset: $("storm-reset"),
+            runs: $("storm-runs"),
+            active: $("storm-active"),
+            k: $("storm-k"),
+            runsTotal: $("storm-runs-total"),
+            schemaRuns: $("storm-schema-runs"),
+            isvalid: $("storm-isvalid"),
+            warn: $("storm-warn"),
+            warnMsg: $("storm-warn-msg"),
+        };
+
+        let registry = null;
+        let form = null;
+        let cellEls = [];
+        let cellLast = [];     // { v, e, hasErr, flashUntil } per cell
+        let stops = [];
+        let formStops = [];
+
+        let validatorRunsTotal = 0;
+        let validatorRunsThisKey = 0;
+        let schemaRunsTotal = 0;
+        let totalKeystrokes = 0;
+
+        function teardown() {
+            for (const s of stops) s();
+            for (const s of formStops) s();
+            stops.length = 0;
+            formStops.length = 0;
+            if (form) { form.dispose(); form = null; }
+            registry = null;
+            cellEls = [];
+            cellLast = [];
+            dom.grid.innerHTML = "";
+            dom.warn.removeAttribute("data-active");
+        }
+
+        function build() {
+            teardown();
+            const N = +dom.N.value;
+            const mode = dom.mode.value;
+
+            // 6 lite-signal nodes per field (signal value, signal touched,
+            // computed rawError, computed dirty, computed error, + the binding
+            // effect we create below). With N up to 200, that's ~1200 nodes.
+            // Default registry caps at 1024 → use createRegistry.
+            registry = createRegistry({ maxNodes: 4096, maxLinks: 16384 });
+
+            const initialValues = {};
+            const validators = {};
+            for (let i = 0; i < N; i++) initialValues["f" + i] = "";
+
+            if (mode === "perfield") {
+                for (let i = 0; i < N; i++) {
+                    const me = "f" + i;
+                    validators[me] = (v) => {
+                        validatorRunsTotal++;
+                        validatorRunsThisKey++;
+                        if (!v) return "required";
+                        if (v.length < 2) return "too short";
+                        return null;
+                    };
+                }
+                try {
+                    form = createForm({
+                        initialValues, validators,
+                        validateOn: "change",
+                        registry,
+                    });
+                } catch (e) {
+                    showWarn("Capacity exceeded creating form: " + e.message);
+                    return;
+                }
+            } else {
+                try {
+                    form = createForm({
+                        initialValues,
+                        validate: (vals) => {
+                            schemaRunsTotal++;
+                            const errs = {};
+                            for (const k in vals) {
+                                if (!vals[k]) errs[k] = "required";
+                                else if (vals[k].length < 2) errs[k] = "too short";
+                            }
+                            return errs;
+                        },
+                        validateOn: "change",
+                        registry,
+                    });
+                } catch (e) {
+                    showWarn("Capacity exceeded creating form: " + e.message);
+                    return;
+                }
+            }
+
+            // Build the DOM grid
+            for (let i = 0; i < N; i++) {
+                const cell = document.createElement("div");
+                cell.className = "storm-cell" + (i === 0 ? " f0" : "");
+                cell.innerHTML =
+                    `<span class="lbl">f${i}${i === 0 ? " ← typing here" : ""}</span>` +
+                    `<span class="v"></span>` +
+                    `<span class="e"></span>`;
+                dom.grid.appendChild(cell);
+                cellEls.push(cell);
+                cellLast.push({ v: "\u0000", e: "\u0000", hasErr: null });
+            }
+
+            // One effect per cell — fine-grained bind, diff-guarded.
+            for (let i = 0; i < N; i++) {
+                const name = "f" + i;
+                const cell = cellEls[i];
+                const cellV = cell.children[1];
+                const cellE = cell.children[2];
+                const rec = cellLast[i];
+                stops.push(registry.effect(() => {
+                    const f = form.field(name);
+                    const v = f.value();
+                    const e = f.error();
+                    if (v !== rec.v) {
+                        rec.v = v;
+                        cellV.textContent = v || "—";
+                        // Amber flash on bind write — Web Animations API,
+                        // zero GC, no setTimeout closure allocated per keystroke.
+                        // (The previous code allocated an anonymous closure +
+                        // timer handle per write — at 1.5M ops/sec that's
+                        // 1.5M GC-eligible objects/sec.)
+                        cell.animate(
+                            [
+                                { backgroundColor: "rgba(245, 185, 66, 0.18)" },
+                                { backgroundColor: "transparent" },
+                            ],
+                            { duration: 200, easing: "ease-out" },
+                        );
+                    }
+                    if (e !== rec.e) {
+                        rec.e = e;
+                        cellE.textContent = e || "";
+                        const has = !!e;
+                        if (has !== rec.hasErr) {
+                            rec.hasErr = has;
+                            cell.classList.toggle("has-error", has);
+                        }
+                    }
+                }));
+            }
+
+            // Form-level effects
+            let lastValid = null;
+            formStops.push(registry.effect(() => {
+                const v = form.isValid();
+                if (v !== lastValid) {
+                    lastValid = v;
+                    dom.isvalid.textContent = String(v);
+                    dom.isvalid.classList.toggle("accent-red", !v);
+                    dom.isvalid.classList.toggle("accent-green", v);
+                }
+            }));
+
+            dom.input.value = "";
+            paintScoreboard();
+        }
+
+        function showWarn(msg) {
+            dom.warn.setAttribute("data-active", "");
+            dom.warnMsg.textContent = msg;
+        }
+
+        // Diff-guarded scoreboard writes.
+        let lastRuns = -1, lastActiveS = -1, lastK = -1, lastRunsTotal = -1, lastSchemaRuns = -1;
+        function paintScoreboard() {
+            if (validatorRunsThisKey !== lastRuns) {
+                lastRuns = validatorRunsThisKey;
+                dom.runs.textContent = String(validatorRunsThisKey);
+            }
+            const a = stats().activeNodes + (registry ? registry.stats().activeNodes : 0);
+            if (a !== lastActiveS) {
+                lastActiveS = a;
+                dom.active.textContent = a;
+            }
+            if (totalKeystrokes !== lastK) {
+                lastK = totalKeystrokes;
+                dom.k.textContent = fmtNum(totalKeystrokes);
+            }
+            if (validatorRunsTotal !== lastRunsTotal) {
+                lastRunsTotal = validatorRunsTotal;
+                dom.runsTotal.textContent = fmtNum(validatorRunsTotal);
+            }
+            if (schemaRunsTotal !== lastSchemaRuns) {
+                lastSchemaRuns = schemaRunsTotal;
+                dom.schemaRuns.textContent = fmtNum(schemaRunsTotal);
+            }
+        }
+
+        dom.input.addEventListener("input", (ev) => {
+            if (!form) return;
+            validatorRunsThisKey = 0;
+            totalKeystrokes++;
+            form.field("f0").set(ev.target.value);
+            queueMicrotask(paintScoreboard);
+        });
+
+        dom.N.addEventListener("input", () => dom.Nv.textContent = dom.N.value);
+        dom.rebuild.addEventListener("click", () => {
+            validatorRunsTotal = 0;
+            schemaRunsTotal = 0;
+            totalKeystrokes = 0;
+            validatorRunsThisKey = 0;
+            build();
+        });
+        dom.reveal.addEventListener("click", () => {
+            if (form) form.submitAttempted.set(true);
+        });
+        dom.reset.addEventListener("click", () => {
+            if (form) form.reset();
+            dom.input.value = "";
+        });
+
+        SCENE_SHOW.storm = () => { if (!form) build(); };
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // SCENE 3 — SUBMIT WIZARD
+    // ══════════════════════════════════════════════════════════════════
+    {
+        const dom = {
+            email: $("w-email"),
+            card: $("w-card"),
+            amount: $("w-amount"),
+            outcome: $("w-outcome"),
+            ffEmail: $("wf-email"),
+            ffCard: $("wf-card"),
+            ffAmount: $("wf-amount"),
+            submit: $("w-submit"),
+            reset: $("w-reset"),
+            attempt: $("w-attempt"),
+            log: $("trace-log"),
+            attempts: $("w-attempts"),
+            succ: $("w-succ"),
+            blk: $("w-blk"),
+            errCount: $("w-err"),
+        };
+
+        let attempts = 0, succ = 0, blk = 0, errCount = 0;
+
+        // Simulated server — its behavior depends on the outcome selector.
+        async function fakeServer() {
+            await new Promise(r => setTimeout(r, 700));
+            const choice = dom.outcome.value;
+            if (choice === "ok") return { id: "txn_" + Math.floor(Math.random() * 1e6) };
+            if (choice === "network") throw new TypeError("Failed to fetch");
+            if (choice === "server") throw new Error("server 500: try again later");
+            if (choice === "bug") {
+                // intentional bug
+                return undeclaredVariable;            // ReferenceError
+            }
+        }
+
+        const form = createForm({
+            initialValues: { email: "", card: "", amount: "" },
+            validators: {
+                email: v => /@/.test(v) && /\./.test(v) ? null : "invalid email",
+                card: v => {
+                    const digits = v.replace(/\s/g, "");
+                    if (digits.length !== 16) return "must be 16 digits";
+                    if (!/^\d+$/.test(digits)) return "digits only";
+                    return null;
+                },
+                amount: v => {
+                    if (!v) return "required";
+                    const n = Number(v);
+                    if (!Number.isFinite(n)) return "must be a number";
+                    if (n < 1 || n > 9999) return "1–9999";
+                    return null;
+                },
+            },
+            onSubmit: async (vals) => {
+                trace("await fakeServer()...", "dim", "step 5");
+                const r = await fakeServer();
+                trace("  ← " + JSON.stringify(r), "green", "step 5");
+                return r;
+            },
+        });
+
+        // Wire fields (one effect per field)
+        const wireField = (name, inputEl, ffEl) => {
+            inputEl.addEventListener("input", ev => form.field(name).set(ev.target.value));
+            inputEl.addEventListener("blur", () => form.field(name).blur());
+            let lastV = "\u0000", lastE = "\u0000", lastErrCls = null;
+            effect(() => {
+                const f = form.field(name);
+                const v = f.value();
+                if (v !== lastV) {
+                    lastV = v;
+                    if (document.activeElement !== inputEl) inputEl.value = v;
+                }
+                const e = f.error();
+                if (e !== lastE) {
+                    lastE = e;
+                    ffEl.querySelector(".err").textContent = e || "";
+                    const has = !!e;
+                    if (has !== lastErrCls) {
+                        lastErrCls = has;
+                        ffEl.classList.toggle("has-error", has);
+                    }
+                }
+            });
+        };
+        wireField("email", dom.email, dom.ffEmail);
+        wireField("card", dom.card, dom.ffCard);
+        wireField("amount", dom.amount, dom.ffAmount);
+
+        // Submit button is reactive on isValid + isSubmitting
+        let lastDisabled = null, lastTxt = null;
+        effect(() => {
+            const submitting = form.isSubmitting();
+            const should = submitting;
+            // We deliberately DON'T gate on isValid here so users can attempt
+            // an invalid submit and see it get blocked in the trace.
+            if (should !== lastDisabled) {
+                lastDisabled = should;
+                dom.submit.disabled = should;
+            }
+            const wantTxt = submitting ? "charging…" : "charge";
+            if (wantTxt !== lastTxt) {
+                lastTxt = wantTxt;
+                dom.submit.textContent = wantTxt;
+            }
+        });
+
+        // ─── Trace log ───
+        const tStart = performance.now();
+        function trace(msg, cls, step) {
+            const line = document.createElement("div");
+            line.className = "trace-line " + (cls || "");
+            const t = ((performance.now() - tStart) / 1000).toFixed(2) + "s";
+            line.innerHTML = `<span class="t">${step || t}</span>${msg}`;
+            dom.log.appendChild(line);
+            dom.log.scrollTop = dom.log.scrollHeight;
+            while (dom.log.children.length > 80) dom.log.removeChild(dom.log.firstChild);
+        }
+
+        // ─── Submit ───
+        async function attemptSubmit(ev) {
+            attempts++;
+            paintCounts();
+            trace("─── attempt #" + attempts + " ───", "dim", "");
+            trace("1. ev.preventDefault()", "dim", "step 1");
+            trace("2. submitAttempted ← true (errors reveal)", "amber", "step 2");
+            trace("3. isValid check: " + form.isValid(), form.isValid() ? "green" : "amber", "step 3");
+            if (!form.isValid()) {
+                trace("   → blocked. onSubmit NOT called.", "amber", "");
+                blk++;
+                paintCounts();
+                return;
+            }
+            trace("4. isSubmitting ← true", "amber", "step 4");
+            let ok = false, err = null;
+            try {
+                ok = await form.submit(ev);
+            } catch (e) {
+                err = e;
+            }
+            trace("7. isSubmitting ← false", "dim", "step 7");
+            if (err) {
+                trace("⚠ caught at caller (re-thrown by lite-form):", "red", "");
+                trace("  " + err.constructor.name + ": " + err.message, "red", "");
+                trace("  → structural bug; submitError stays " + form.submitError(), "dim", "");
+                errCount++;
+            } else if (ok) {
+                trace("✓ submit resolved true", "green", "");
+                succ++;
+            } else {
+                const se = form.submitError();
+                if (se) {
+                    trace("✗ submit resolved false; submitError = " + se.constructor.name + ": " + se.message, "red", "");
+                    errCount++;
+                } else {
+                    trace("✗ submit resolved false (validation blocked)", "amber", "");
+                }
+            }
+            paintCounts();
+        }
+        dom.submit.addEventListener("click", attemptSubmit);
+        dom.reset.addEventListener("click", () => {
+            form.reset();
+            dom.email.value = "";
+            dom.card.value = "";
+            dom.amount.value = "";
+            trace("reset()", "dim", "");
+        });
+        dom.attempt.addEventListener("click", () => {
+            form.submitAttempted.set(true);
+            trace("submitAttempted ← true (manual; no onSubmit call)", "amber", "");
+        });
+
+        let lastA = -1, lastS = -1, lastB = -1, lastE = -1;
+        function paintCounts() {
+            if (attempts !== lastA) { lastA = attempts; dom.attempts.textContent = attempts; }
+            if (succ !== lastS) { lastS = succ; dom.succ.textContent = succ; }
+            if (blk !== lastB) { lastB = blk; dom.blk.textContent = blk; }
+            if (errCount !== lastE) { lastE = errCount; dom.errCount.textContent = errCount; }
+        }
+
+        // Silence the ReferenceError in console so the demo looks tidy in
+        // browser devtools. The trace already shows it.
+        const origConsoleError = console.error;
+        console.error = function(...args) {
+            const msg = args[0];
+            if (typeof msg === "string" && msg.includes("[lite-form] bug thrown inside onSubmit")) {
+                // suppress — we already log it in the trace
+                return;
+            }
+            return origConsoleError.apply(this, args);
+        };
+
+        SCENE_SHOW.wizard = () => { /* nothing */ };
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // SCENE 4 — vs HAND-WRITTEN
+    // ══════════════════════════════════════════════════════════════════
+    {
+        const dom = {
+            liteCanvas: $("vs-lite-canvas"),
+            naiveCanvas: $("vs-naive-canvas"),
+            N: $("vs-N"), Nv: $("vs-N-v"),
+            Ndisp1: $("vs-N-disp1"), Ndisp2: $("vs-N-disp2"),
+            run: $("vs-run"), stop: $("vs-stop"), clear: $("vs-clear"),
+            liteN: $("vs-lite-n"), naiveN: $("vs-naive-n"),
+            liteStat: $("vs-lite-stat"), naiveStat: $("vs-naive-stat"),
+            speedup: $("vs-speedup"),
+            active: $("vs-active"),
+        };
+
+        // Parallel Float64Array ring buffers (NO {t,v} object pushes — that
+        // was the lite-time bug we fixed). Per-tick µs/keystroke values.
+        const MAX_POINTS = 600;
+        const liteT = new Float64Array(MAX_POINTS);
+        const liteUs = new Float64Array(MAX_POINTS);
+        const naiveT = new Float64Array(MAX_POINTS);
+        const naiveUs = new Float64Array(MAX_POINTS);
+        let liteHead = 0, liteCount = 0, naiveHead = 0, naiveCount = 0;
+        let liteSum = 0, naiveSum = 0;
+        function ringReset() {
+            liteHead = liteCount = 0;
+            naiveHead = naiveCount = 0;
+            liteSum = naiveSum = 0;
+        }
+
+        let liteCtx, liteW, liteH;
+        let naiveCtx, naiveW, naiveH;
+        function resizeVs() {
+            const a = sizeCanvas(dom.liteCanvas);
+            liteCtx = a.ctx; liteW = a.w; liteH = a.h;
+            const b = sizeCanvas(dom.naiveCanvas);
+            naiveCtx = b.ctx; naiveW = b.w; naiveH = b.h;
+            drawVs();
+        }
+        window.addEventListener("resize", () => resizeVs());
+
+        let liteForm = null;
+        let naive = null;
+        let liteReg = null;
+        let liteStops = [];
+
+        function buildSides() {
+            tearDownSides();
+            const N = +dom.N.value;
+            dom.Ndisp1.textContent = N;
+            dom.Ndisp2.textContent = N;
+
+            // ─── lite-form side ───
+            const initialValues = {};
+            const validators = {};
+            for (let i = 0; i < N; i++) {
+                initialValues["f" + i] = "";
+                validators["f" + i] = v => v ? null : "required";
+            }
+            liteReg = createRegistry({ maxNodes: 8192, maxLinks: 32768 });
+            liteForm = createForm({ initialValues, validators, registry: liteReg });
+            // Active subscribers so the computeds have demand.
+            for (let i = 0; i < N; i++) {
+                const idx = i;
+                liteStops.push(liteReg.effect(() => liteForm.field("f" + idx).error()));
+            }
+
+            // ─── naive handwritten side ───
+            const values = {};
+            const errors = {};
+            const validatorsN = {};
+            const subscribers = {};
+            for (let i = 0; i < N; i++) {
+                values["f" + i] = "";
+                errors["f" + i] = "required";
+                validatorsN["f" + i] = v => v ? null : "required";
+                subscribers["f" + i] = [];
+            }
+            // One subscriber per field (the "render this field" callback)
+            let naiveSink = 0;
+            for (let i = 0; i < N; i++) {
+                subscribers["f" + i].push(err => { naiveSink += err ? 1 : 0; });
+            }
+            naive = {
+                N,
+                values, errors, validators: validatorsN, subscribers,
+                setValue(path, val) {
+                    this.values[path] = val;
+                    for (const k in this.validators) {
+                        const newErr = this.validators[k](this.values[k]);
+                        if (newErr !== this.errors[k]) {
+                            this.errors[k] = newErr;
+                            const subs = this.subscribers[k];
+                            for (let i = 0; i < subs.length; i++) subs[i](newErr);
+                        }
+                    }
+                },
+            };
+        }
+
+        function tearDownSides() {
+            for (const s of liteStops) s();
+            liteStops.length = 0;
+            if (liteForm) { liteForm.dispose(); liteForm = null; }
+            liteReg = null;
+            naive = null;
+        }
+
+        let running = false;
+        let rafId = 0;
+        // Pre-allocated alternating values — reused every tick so the hot
+        // loop measures lite-form's graph traversal, NOT V8's string
+        // allocation / interning. Without this, `"v" + (i & 1)` allocates
+        // a fresh string per iteration → ~300K string objects/sec at
+        // K=5000 × 60Hz, which dominates the wall-clock measurement.
+        const VS_VALS = ["v0", "v1"];
+
+        function runTick() {
+            if (!running) return;
+            const K = 5000;        // keystrokes per tick
+
+            // ─── lite-form side ───
+            const fld = liteForm.field("f0");
+            const t0 = performance.now();
+            for (let i = 0; i < K; i++) fld.set(VS_VALS[i & 1]);
+            const t1 = performance.now();
+            const liteUsPer = ((t1 - t0) / K) * 1000;     // µs per keystroke
+
+            liteT[liteHead] = t1;
+            liteUs[liteHead] = liteUsPer;
+            liteHead = (liteHead + 1) % MAX_POINTS;
+            if (liteCount < MAX_POINTS) liteCount++;
+            liteSum += liteUsPer;
+
+            // ─── naive side ───
+            const t2 = performance.now();
+            for (let i = 0; i < K; i++) naive.setValue("f0", VS_VALS[i & 1]);
+            const t3 = performance.now();
+            const naiveUsPer = ((t3 - t2) / K) * 1000;
+
+            naiveT[naiveHead] = t3;
+            naiveUs[naiveHead] = naiveUsPer;
+            naiveHead = (naiveHead + 1) % MAX_POINTS;
+            if (naiveCount < MAX_POINTS) naiveCount++;
+            naiveSum += naiveUsPer;
+
+            paintStats();
+            drawVs();
+            rafId = requestAnimationFrame(runTick);
+        }
+
+        // Diff-guarded stat writes. Integer-hundredths comparisons avoid
+        // building the formatted µs / × strings 60 times/sec — they're
+        // built only when the underlying rounded value actually changes.
+        let lastLiteN = -1, lastNaiveN = -1;
+        let lastLiteUs100 = -1, lastNaiveUs100 = -1, lastSpeedup10 = -1;
+        let lastActive = -1;
+        function paintStats() {
+            if (liteCount !== lastLiteN) {
+                lastLiteN = liteCount;
+                dom.liteN.textContent = fmtNum(liteCount);
+            }
+            if (naiveCount !== lastNaiveN) {
+                lastNaiveN = naiveCount;
+                dom.naiveN.textContent = fmtNum(naiveCount);
+            }
+            const liteAvg = liteCount ? liteSum / liteCount : 0;
+            const naiveAvg = naiveCount ? naiveSum / naiveCount : 0;
+
+            // Compare on rounded INTEGER hundredths; build the string only
+            // when that integer moves. Same display granularity (.00) but
+            // zero string churn while the average is stable.
+            const liteU100 = Math.round(liteAvg * 100);
+            if (liteU100 !== lastLiteUs100) {
+                lastLiteUs100 = liteU100;
+                dom.liteStat.textContent =
+                    Math.floor(liteU100 / 100) + "." +
+                    String(liteU100 % 100).padStart(2, "0") + " µs";
+            }
+            const naiveU100 = Math.round(naiveAvg * 100);
+            if (naiveU100 !== lastNaiveUs100) {
+                lastNaiveUs100 = naiveU100;
+                dom.naiveStat.textContent =
+                    Math.floor(naiveU100 / 100) + "." +
+                    String(naiveU100 % 100).padStart(2, "0") + " µs";
+            }
+            // Speedup with one decimal — same trick, tenths.
+            const sp10 = liteAvg > 0 ? Math.round((naiveAvg / liteAvg) * 10) : -1;
+            if (sp10 !== lastSpeedup10) {
+                lastSpeedup10 = sp10;
+                dom.speedup.textContent = sp10 < 0
+                    ? "— ×"
+                    : Math.floor(sp10 / 10) + "." + (sp10 % 10) + " ×";
+            }
+            const a = (liteReg ? liteReg.stats().activeNodes : 0) + stats().activeNodes;
+            if (a !== lastActive) {
+                lastActive = a;
+                dom.active.textContent = a;
+            }
+        }
+
+        // Per-panel label caches — drawChart writes the rounded µs values
+        // 60 times/sec; without caching that's 240 string allocations per
+        // second just for the axis labels. We round to 1 decimal to widen
+        // the cache hit rate and only allocate when the rounded value moves.
+        const liteLabel = { hi: NaN, lo: NaN, hiStr: "—", loStr: "—" };
+        const naiveLabel = { hi: NaN, lo: NaN, hiStr: "—", loStr: "—" };
+
+        function drawChart(ctx, tArr, uArr, head, count, w, h, color, label) {
+            ctx.clearRect(0, 0, w, h);
+
+            const padTop = 30, padBot = 30, padL = 50, padR = 20;
+            const innerW = w - padL - padR;
+            const innerH = h - padTop - padBot;
+
+            ctx.strokeStyle = COLOR_GRID;
+            ctx.lineWidth = 1;
+            for (let y = 0; y < 5; y++) {
+                const py = padTop + innerH * y / 4;
+                ctx.beginPath();
+                ctx.moveTo(padL, py); ctx.lineTo(w - padR, py);
+                ctx.stroke();
+            }
+
+            if (count < 2) {
+                ctx.fillStyle = COLOR_LBL_DIM;
+                ctx.font = FONT_HINT;
+                ctx.textAlign = "center";
+                ctx.fillText("press ▶ run keystroke storm", w / 2, h / 2);
+                return;
+            }
+
+            const start = (head - count + MAX_POINTS) % MAX_POINTS;
+            let lo = Infinity, hi = -Infinity;
+            for (let i = 0; i < count; i++) {
+                const slot = (start + i) % MAX_POINTS;
+                const v = uArr[slot];
+                if (v < lo) lo = v;
+                if (v > hi) hi = v;
+            }
+            let range = hi - lo;
+            if (range < 0.1) range = 0.1;
+            const invRange = innerH / range;
+
+            const tOld = tArr[start];
+            const tNew = tArr[(start + count - 1) % MAX_POINTS];
+            let tSpan = tNew - tOld;
+            if (tSpan < 1) tSpan = 1;
+            const invSpan = innerW / tSpan;
+
+            ctx.fillStyle = COLOR_LBL_DIM;
+            ctx.font = FONT_TINY;
+            ctx.textAlign = "right";
+            // Round to 1 decimal for cache stability; reformat only on real change.
+            const hiR = Math.round(hi * 10) / 10;
+            const loR = Math.round(lo * 10) / 10;
+            if (hiR !== label.hi) { label.hi = hiR; label.hiStr = hiR.toFixed(1) + " µs"; }
+            if (loR !== label.lo) { label.lo = loR; label.loStr = loR.toFixed(1) + " µs"; }
+            ctx.fillText(label.hiStr, padL - 6, padTop + 4);
+            ctx.fillText(label.loStr, padL - 6, padTop + innerH - 2);
+
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            for (let i = 0; i < count; i++) {
+                const slot = (start + i) % MAX_POINTS;
+                const x = padL + (tArr[slot] - tOld) * invSpan;
+                const y = padTop + innerH - (uArr[slot] - lo) * invRange;
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+
+            ctx.lineTo(padL + innerW, padTop + innerH);
+            ctx.lineTo(padL, padTop + innerH);
+            ctx.closePath();
+            ctx.globalAlpha = 0.15;
+            ctx.fillStyle = color;
+            ctx.fill();
+            ctx.globalAlpha = 1;
+        }
+
+        function drawVs() {
+            if (!liteCtx) return;
+            drawChart(liteCtx, liteT, liteUs, liteHead, liteCount, liteW, liteH, COLOR_LITE, liteLabel);
+            drawChart(naiveCtx, naiveT, naiveUs, naiveHead, naiveCount, naiveW, naiveH, COLOR_MAGENTA, naiveLabel);
+        }
+
+        function startVs() {
+            if (!liteForm) buildSides();
+            if (running) return;
+            running = true;
+            dom.run.disabled = true;
+            dom.stop.disabled = false;
+            ringReset();
+            rafId = requestAnimationFrame(runTick);
+        }
+
+        function stopVs() {
+            if (!running) return;
+            running = false;
+            dom.run.disabled = false;
+            dom.stop.disabled = true;
+            if (rafId) cancelAnimationFrame(rafId);
+        }
+
+        function clearVs() {
+            ringReset();
+            dom.liteStat.textContent = "— µs";
+            dom.naiveStat.textContent = "— µs";
+            dom.speedup.textContent = "— ×";
+            lastLiteStat = ""; lastNaiveStat = ""; lastSpeedup = "";
+            drawVs();
+        }
+
+        dom.N.addEventListener("input", () => {
+            dom.Nv.textContent = dom.N.value;
+            dom.Ndisp1.textContent = dom.N.value;
+            dom.Ndisp2.textContent = dom.N.value;
+            tearDownSides();              // force rebuild with new N on next start
+        });
+        dom.run.addEventListener("click", startVs);
+        dom.stop.addEventListener("click", stopVs);
+        dom.clear.addEventListener("click", clearVs);
+
+        SCENE_SHOW.vs = () => { resizeVs(); paintStats(); };
+    }
+
+    // ─── Boot ────────────────────────────────────────────────────────
+    $("t-status").textContent = "ready";
+</script>
+</body>
+</html>

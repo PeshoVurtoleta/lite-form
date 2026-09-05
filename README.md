@@ -1,0 +1,671 @@
+# @zakkster/lite-form
+
+[![npm version](https://img.shields.io/npm/v/@zakkster/lite-form.svg?style=for-the-badge&color=latest)](https://www.npmjs.com/package/@zakkster/lite-form)
+[![sponsor](https://img.shields.io/badge/sponsor-PeshoVurtoleta-ea4aaa.svg?logo=github)](https://github.com/sponsors/PeshoVurtoleta)
+[![zero-gc](https://img.shields.io/badge/zero--GC-steady--state-5fe39f.svg)](#why-this-exists)
+[![npm bundle size](https://img.shields.io/bundlephobia/minzip/@zakkster/lite-form?style=for-the-badge)](https://bundlephobia.com/result?p=@zakkster/lite-resource)
+[![npm downloads](https://img.shields.io/npm/dm/@zakkster/lite-form?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-form)
+[![npm total downloads](https://img.shields.io/npm/dt/@zakkster/lite-form?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-form)
+![TypeScript](https://img.shields.io/badge/TypeScript-Types-informational?style=flat-square)
+[![lite-signal peer](https://img.shields.io/npm/dependency-version/@zakkster/lite-form/peer/@zakkster/lite-signal?style=for-the-badge&color=blue)](https://github.com/PeshoVurtoleta/lite-signal)
+[![license](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE.txt)
+
+> Headless reactive forms for `@zakkster/lite-signal`.
+> No DOM, no virtual DOM, no compiler. **Typing in one field of a 100-field form
+> runs exactly one validator** — every other field is a cached read.
+
+```bash
+npm i @zakkster/lite-form @zakkster/lite-signal
+```
+
+```js
+import { createForm } from "@zakkster/lite-form";
+
+const form = createForm({
+    initialValues: { email: "", password: "" },
+    validators: {
+        email:    (v) => /@/.test(v) ? null : "invalid email",
+        password: (v) => v.length >= 8 ? null : "min 8 chars",
+    },
+    onSubmit: async (vals) => fetch("/api/login", { method: "POST", body: JSON.stringify(vals) }),
+});
+
+// Bind to anything — vanilla DOM, lite-element, your own renderer:
+const e = form.field("email");
+emailInput.value = e.value();
+emailInput.addEventListener("input", (ev) => e.set(ev.target.value));
+// e.error() is a live reactive read — null until shown
+```
+
+**Headline (measured on Node 22, see [Benchmarks](#benchmarks)):**
+**~1.5 million keystrokes/sec** on a 100-field form — typing in one field runs
+exactly one validator. **8× faster than a hand-written "run all validators on
+every change" form.** Lifecycle: ~210K create+dispose/sec, ~1 byte retained per
+form. Pool returns to baseline (`stats().activeNodes === 0`).
+
+---
+
+## Table of contents
+
+- [Why this exists](#why-this-exists)
+- [What you get](#what-you-get)
+- [Quickstart](#quickstart)
+- [Validation modes](#validation-modes)
+- [The two validation pipelines](#the-two-validation-pipelines)
+- [Cross-field validation](#cross-field-validation)
+- [Schema (Zod / Yup)](#schema-zod--yup)
+- [Surfacing server errors (the `setFieldError` story)](#surfacing-server-errors-the-setfielderror-story)
+- [Submit lifecycle](#submit-lifecycle)
+- [API reference](#api-reference)
+- [Benchmarks](#benchmarks)
+- [Edge cases pinned down](#edge-cases-pinned-down)
+- [What this is **not**](#what-this-is-not)
+- [Browser / runtime support](#browser--runtime-support)
+- [Peer dependency](#peer-dependency)
+- [FAQ](#faq)
+- [License](#license)
+
+---
+
+## Why this exists
+
+A small set of design constraints picked deliberately:
+
+- **One validator per keystroke.** When you type in `email`, lite-form runs
+  `email`'s validator and nothing else. The other 99 fields keep their cached
+  error values. There is no `<form>` re-render, no validation pass over the
+  whole shape, no diff. Cutoff-gated computeds + reveal-gated display do this
+  for free.
+- **One schema run per keystroke, not one per field.** If you use a form-level
+  schema (Zod, Yup, custom), it's hoisted into a single computed that runs
+  exactly once per change. Every field reads `schema[path]` as a cached lookup;
+  lite-signal's `Object.is` cutoff means only fields whose error actually
+  flipped propagate to the DOM.
+- **Validity vs. display are split.** `isValid()` always reflects true validity
+  — drives a submit button correctly from the first render. A field's
+  `error()` is reveal-gated (`change` / `blur` / `submit`), so a pristine form
+  doesn't scream "required" at the user before they've touched anything.
+- **No DOM. No renderer.** lite-form ships ~280 lines of pure state. Bind it
+  with `@zakkster/lite-signal-dom`, `@zakkster/lite-element`, hand-written
+  `addEventListener`, or whatever you want. Forms are state, not components.
+- **Pool-clean teardown.** `form.dispose()` frees every signal and computed.
+  `stats().activeNodes` returns to baseline. We test it on a 100-field form;
+  the bench audits the global pool at the end of every run.
+
+If you want a `<Form>` component, a renderer, a CSS framework, a server adapter,
+or a 12-step wizard runtime — this is the wrong library. One factory function,
+one peer dep, ~3 KB minified.
+
+---
+
+## What you get
+
+```js
+const form = createForm({
+    initialValues:  { /* shape your form here */ },
+    validators:     { /* path -> (value, ctx) => message | null */ },
+    validate:       /* optional: (values) => { path: message } — Zod adapter goes here */,
+    fieldOpts:      { /* path -> { parse, format } */ },
+    validateOn:     "change" | "blur" | "submit",
+    onSubmit:       async (values) => { /* ... */ },
+    registry:       /* optional: a createRegistry() handle for isolation */,
+});
+
+// Per-field reactive state:
+form.field("email").value()      // reactive read (call to subscribe)
+form.field("email").error()      // reveal-gated displayed error
+form.field("email").dirty()      // reactive boolean
+form.field("email").touched()    // reactive boolean
+form.field("email").set(value)   // write
+form.field("email").blur()       // mark touched
+form.field("email").reset()      // back to initial
+form.field("email").props()      // { value, onInput, onBlur } — spread onto an <input>
+
+// Form-level reactive state:
+form.isValid()        // always live (not reveal-gated)
+form.isDirty()        // any field differs from initial
+form.isSubmitting()   // async onSubmit in flight
+form.submitError()    // last operational error (or null)
+form.submitAttempted()// reveals all errors once true
+
+// Imperative actions:
+form.values()                                // untracked snapshot
+form.setValues({ email: "x", password: "y" })// batched multi-set
+form.reset()                                 // back to initialValues; clears submit state
+form.submit(ev?)                             // Promise<boolean> — runs validation + onSubmit
+form.dispose()                               // free every signal/computed
+```
+
+---
+
+## Quickstart
+
+A complete sign-in form, framework-agnostic. Wire it to any reactive primitive
+(`effect` from lite-signal, lite-element's `bind`, lite-signal-dom, manual):
+
+```js
+import { createForm } from "@zakkster/lite-form";
+import { effect } from "@zakkster/lite-signal";
+
+const form = createForm({
+    initialValues: { email: "", password: "" },
+    validators: {
+        email:    (v) => v ? (/@/.test(v) ? null : "invalid email") : "required",
+        password: (v) => v.length >= 8 ? null : "min 8 chars",
+    },
+    onSubmit: async ({ email, password }) => {
+        const r = await fetch("/api/login", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ email, password }),
+        });
+        if (!r.ok) throw new Error("login failed");
+    },
+});
+
+// Wire to plain DOM. Each input mirrors its field; each <span> shows the error.
+const $ = (id) => document.getElementById(id);
+for (const name of ["email", "password"]) {
+    const f = form.field(name);
+    const inp = $(name), err = $(name + "-error");
+    inp.addEventListener("input", (ev) => f.set(ev.target.value));
+    inp.addEventListener("blur", () => f.blur());
+    effect(() => { inp.value = f.value(); });
+    effect(() => { err.textContent = f.error() || ""; });
+}
+
+// Submit button only enabled while valid; reflects in-flight state.
+const btn = $("submit");
+effect(() => {
+    btn.disabled = !form.isValid() || form.isSubmitting();
+    btn.textContent = form.isSubmitting() ? "Signing in…" : "Sign in";
+});
+$("form").addEventListener("submit", (ev) => form.submit(ev));
+```
+
+---
+
+## Validation modes
+
+`validateOn` controls when errors become **visible**. It does NOT affect
+`isValid()` — that's always live.
+
+| mode       | error shown when…                                     |
+|------------|-------------------------------------------------------|
+| `"change"` | the field becomes dirty (default — keystroke reveal)  |
+| `"blur"`   | the field is blurred for the first time               |
+| `"submit"` | the form has had at least one submit attempt          |
+
+A submit attempt always reveals everything, regardless of the mode. `reset()`
+clears the submit-attempted flag, so a fresh form is pristine again.
+
+---
+
+## The two validation pipelines
+
+Both feed into the same `field.error()` read; you can use either, both, or
+neither. They merge cleanly: per-field validators run first, schema fills in
+what they don't cover.
+
+### Per-field validators
+
+```js
+validators: {
+    email:    (v, ctx) => /@/.test(v) ? null : "invalid email",
+    password: (v, ctx) => v.length >= 8 ? null : "min 8 chars",
+}
+```
+
+A per-field validator is a function `(value, ctx) => string | null`. It depends
+only on its own field's value (plus anything it reads via `ctx.get(path)`, see
+[Cross-field validation](#cross-field-validation)). The keystroke path is lean:
+typing in `email` runs `email`'s validator and no other.
+
+### Form-level schema
+
+```js
+import { z } from "zod";
+const schema = z.object({ email: z.string().email(), age: z.number().min(18) });
+
+const form = createForm({
+    initialValues: { email: "", age: 0 },
+    validate: (values) => {
+        const r = schema.safeParse(values);
+        if (r.success) return {};
+        return Object.fromEntries(
+            r.error.issues.map(i => [i.path.join("."), i.message])
+        );
+    },
+});
+```
+
+The `validate` function runs in **one** hoisted computed, exactly once per
+keystroke. Every field reads its slot from the result as an O(1) lookup.
+Object.is cutoff means a field that stays "required" across keystrokes
+doesn't re-render the DOM.
+
+This means: **plug in your Zod parse, your Yup schema, your hand-rolled
+validator — the cost per keystroke is the cost of ONE schema run, not N.**
+
+---
+
+## Cross-field validation
+
+A validator's `ctx.get(path)` is a tracked read: depending on another field
+makes this field re-validate whenever the dependency changes.
+
+```js
+createForm({
+    initialValues: { password: "", confirm: "" },
+    validators: {
+        confirm: (v, { get }) => v === get("password") ? null : "must match",
+    },
+});
+```
+
+Typing in `password` re-validates `confirm` automatically. There's no
+dependency declaration, no `dependsOn: ["password"]`, no manual subscription
+— the act of reading `get("password")` records the dependency. The same
+mechanism lite-signal uses for `computed`.
+
+---
+
+## Schema (Zod / Yup)
+
+Adapters are 4-line functions. Plug them into `validate`:
+
+```js
+// Zod
+const zodAdapter = (schema) => (values) => {
+    const r = schema.safeParse(values);
+    return r.success ? {} :
+        Object.fromEntries(r.error.issues.map(i => [i.path.join("."), i.message]));
+};
+
+// Yup
+const yupAdapter = (schema) => async (values) => {
+    try { await schema.validate(values, { abortEarly: false }); return {}; }
+    catch (e) { return Object.fromEntries(e.inner.map(i => [i.path, i.message])); }
+};
+```
+
+> Async schema support is a v1.1 layer (currently lite-form's `validate` is
+> sync). For async business validation, use [@zakkster/lite-resource](https://www.npmjs.com/package/@zakkster/lite-resource)
+> inside an effect that reads the form values.
+
+Schema errors merge with per-field validators: per-field message wins if
+present, otherwise the schema message shows. Useful for "the schema validates
+shape; the per-field validator checks availability".
+
+---
+
+## Surfacing server errors (the `setFieldError` story)
+
+lite-form has no `setFieldError(path, message)` API. It doesn't need one.
+
+Per-field validators run inside a `computed`, so any signal they read is
+tracked. The canonical pattern is: hold the server error in a signal; flip
+it from your fetch handler. The field re-validates automatically.
+
+```js
+import { signal, effect } from "@zakkster/lite-signal";
+
+const usernameServerErr = signal(null);   // null | "already taken" | ...
+
+const form = createForm({
+    initialValues: { username: "", email: "" },
+    validators: {
+        username: (v) => {
+            if (!v) return "required";
+            if (v.length < 3) return "too short";
+            return usernameServerErr() || null;     // tracked read
+        },
+    },
+    async onSubmit(values) {
+        const res = await fetch("/api/signup", { method: "POST", body: JSON.stringify(values) });
+        if (res.status === 409) {
+            const body = await res.json();
+            if (body.field === "username") usernameServerErr.set(body.message);
+            throw new Error("signup failed");        // surfaces in submitError too
+        }
+    },
+});
+
+// Clear the server error when the user starts editing — the user has acknowledged it:
+effect(() => { form.field("username").value(); usernameServerErr.set(null); });
+```
+
+Why this is strictly nicer than a `setFieldError` method:
+
+- **No imperative call** — the field error is a function of `value × server-state`,
+  always. It can't get out of sync with the value (the classic "clear server
+  error when user types" footgun is one effect, not a forgotten listener).
+- **No race** between programmatic write and reactive validate. The signal
+  flip and the validator re-run are in the same reactive transaction.
+- **Disposal is free** — `serverErr` is a plain lite-signal handle. Pass a
+  `registry` to `createForm` and they're cleaned up together.
+- **Composable** — multiple validators can read the same server-error signal
+  (e.g. a generic `formErr` plus per-field overrides). Try doing that with
+  imperative `setFieldError` calls without re-applying them on every change.
+
+For form-wide errors (the whole submission failed, not one field),
+`submitError()` is already wired — your `onSubmit` just throws.
+
+---
+
+## Submit lifecycle
+
+```js
+const ok = await form.submit(ev?);
+```
+
+1. `ev.preventDefault()` if `ev` is provided.
+2. `submitAttempted` flips to `true` → reveals all errors.
+3. If `isValid()` is false → returns `false` synchronously. No call to `onSubmit`.
+4. `isSubmitting` flips to `true`.
+5. `onSubmit(values())` is invoked with an **untracked** snapshot.
+6. On success: returns `true`, `isSubmitting` flips back, `submitError` is cleared.
+7. On throw:
+   - `ReferenceError` / `SyntaxError` → re-thrown after `console.error`. These
+     are structural bugs in your code, not legitimate submission outcomes;
+     hiding them in `submitError` would be a debugging nightmare.
+   - Any other error (including `TypeError` from `fetch()` network failure)
+     → stored in `submitError()`, returns `false`. `isSubmitting` resets.
+
+`submit()` and `onSubmit` are both called inside `untrack` — they don't
+accidentally subscribe the calling effect to internal form state, and your
+`onSubmit` can read `auth.token()` without that becoming a dependency.
+
+### Double-submit defense (concurrent `submit()` IS a footgun)
+
+`submit()` is **not** internally deduped. If `submit()` is called twice while
+one call is still awaiting `onSubmit`, both calls go through. Both `onSubmit`
+invocations run concurrently against the same values snapshot. Both return
+`true` if the request succeeds. This is intentional simplicity — lite-form
+holds no in-flight lock and no internal queue — but it does mean a hotkey
+that fires `submit()` from two places, or a parent component re-rendering and
+re-attaching a handler, can double-fire your network request.
+
+Three documented defenses, in order of how often you'll want each:
+
+**1. Disable the submit button** (covers ~90% of cases — UI forms with a
+single submit element):
+
+```js
+effect(() => { btn.disabled = form.isSubmitting() || !form.isValid(); });
+```
+
+**2. Throttle the handler** with [@zakkster/lite-throttle](https://www.npmjs.com/package/@zakkster/lite-throttle) (covers Enter-key + button, hotkey + button, two places that
+both fire `submit()`):
+
+```js
+import { throttle } from "@zakkster/lite-throttle";
+const guardedSubmit = throttle(() => form.submit(), {
+    leading: true,        // fire the first call
+    trailing: false,      // drop subsequent calls in the window
+    wait: 500,
+});
+formEl.addEventListener("submit", (e) => { e.preventDefault(); guardedSubmit(); });
+```
+
+**3. Guard inside your own handler** with `isSubmitting.peek()` (one-liner,
+no extra dependency):
+
+```js
+function onFormSubmit(e) {
+    e.preventDefault();
+    if (form.isSubmitting.peek()) return;
+    form.submit();
+}
+```
+
+Don't disable both — pick the one that matches your UI surface. Disabling
+the button alone won't help if `submit()` is also bound to Enter on the
+document; that's where throttle wins.
+
+---
+
+## API reference
+
+### `createForm(config?) → Form`
+
+| option          | type                                                | default          |
+|-----------------|-----------------------------------------------------|------------------|
+| `initialValues` | `Record<string, any>`                               | `{}`             |
+| `validators`    | `Record<string, (value, ctx) => string \| null>`    | `{}`             |
+| `validate`      | `(values) => Record<string, string \| null>`        | —                |
+| `fieldOpts`     | `Record<string, { parse?, format? }>`               | `{}`             |
+| `validateOn`    | `"change" \| "blur" \| "submit"`                    | `"change"`       |
+| `onSubmit`      | `(values) => void \| Promise<void>`                 | —                |
+| `registry`      | `createRegistry()` handle                           | default registry |
+
+### `form.field(path) → Field`
+
+Returns the reactive state for a field. Paths are dotted (`"user.address.zip"`,
+`"items.0.qty"`). Fields declared in `initialValues`/`validators`/`fieldOpts`
+are eagerly allocated; calling `field()` on an undeclared path creates one
+lazily on first access.
+
+### Field
+
+| member        | type                       | notes                                                  |
+|---------------|----------------------------|--------------------------------------------------------|
+| `path`        | `string`                   |                                                        |
+| `value`       | `WritableSignal<T>`        | `value()` reads+tracks, `value.peek()` untracked       |
+| `error`       | `ReadSignal<string\|null>` | reveal-gated; merges per-field + schema                |
+| `rawError`    | `ReadSignal<string\|null>` | always-live validity (ignores reveal); drives isValid  |
+| `dirty`       | `ReadSignal<boolean>`      | value !== initial                                      |
+| `touched`     | `ReadSignal<boolean>`      | blurred at least once                                  |
+| `set(v)`      | function                   |                                                        |
+| `blur()`      | function                   | marks touched                                          |
+| `reset()`     | function                   | back to initial value, clears touched                  |
+| `props()`     | `() => FieldProps`         | `{ value, onInput, onBlur }` — spread onto `<input>`   |
+
+### Form
+
+| member             | type                                | notes                                          |
+|--------------------|-------------------------------------|------------------------------------------------|
+| `field(path)`      | `(string) => Field`                 |                                                |
+| `values()`         | `() => object`                      | untracked snapshot                             |
+| `setValues(patch)` | `(object) => void`                  | batched multi-set                              |
+| `reset()`          | `() => void`                        | restore initial, clear touched + submit state  |
+| `submit(ev?)`      | `(ev?) => Promise<boolean>`         | true if `onSubmit` ran without throwing        |
+| `isValid`          | `ReadSignal<boolean>`               | always live                                    |
+| `isDirty`          | `ReadSignal<boolean>`               |                                                |
+| `isSubmitting`     | `ReadSignal<boolean>`               |                                                |
+| `submitError`      | `ReadSignal<Error \| null>`         | last operational throw                         |
+| `submitAttempted`  | `WritableSignal<boolean>`           | set true to force-reveal                       |
+| `dispose()`        | `() => void`                        | free every node                                |
+
+---
+
+## Benchmarks
+
+Measured on Node 22.22 with `--expose-gc`. Run yourself: `npm run bench`.
+
+| Scenario                                                          | N       | ops/sec     | transient/op | retained/op |
+|-------------------------------------------------------------------|--------:|------------:|-------------:|------------:|
+| **A) create+dispose, small** (3 fields, 1 validator)              | 20K     | **~210K**   | ~260 B       | ~2 B        |
+| **B) create+dispose, large** (100 fields + per-field validators)  | 2K      | ~1.3K       | ~9 KB        | ~1 B        |
+| **C) keystroke on 1 of 100 fields** (per-field validators)        | 50K     | **~1.5M**   | ~28 B        | ~1 B        |
+| **D) keystroke on 1 of 100 fields** (form-level schema, hoisted)  | 50K     | ~30K        | ~164 B       | ~1 B        |
+| **E) cross-field validation** (pw + confirm, ctx.get)             | 50K     | **~5M**     | ~25 B        | 0 B         |
+| **F) pure-JS baseline** (handwritten, runs all 100 validators)    | 50K     | ~180K       | ~8 B         | 0 B         |
+
+**Headline:**
+
+- **A keystroke on a 100-field form lite-form ≈ 8× faster** than the
+  handwritten pattern that re-runs every validator on every change (F vs C).
+  The reason: lite-form only invokes `f0`'s validator. The other 99 fields'
+  validators are cached and never called — their `error()` short-circuits
+  on the reveal gate before reading `rawError()`.
+- **Schema-validated forms cost ~33 µs per keystroke** at N=100 (D). The cost
+  is dominated by snapshot construction (`structuredClone(initialValues)` +
+  setPath × N) — your Zod parse runs **once** per change, not N times.
+- **Cross-field validation is cheap.** `ctx.get` records a dependency on
+  read; subsequent changes re-validate only the dependent. ~5M ops/sec.
+- **Pool clean.** All scenarios end with `stats().activeNodes === 0` —
+  no leaked signals or computeds across 100K+ lifecycle cycles.
+
+> *Numbers vary ~15% run-to-run with GC timing. The bench file is
+> `bench/bench.mjs`; copy it, modify, re-run.*
+
+---
+
+## Edge cases pinned down
+
+- **`dispose()` is idempotent.** Calling it twice is safe; the second call is
+  a no-op.
+- **`reset()` clears `submitError` too.** A pristine form is fully pristine —
+  errors, touched flags, submit attempts, and the last submit throw all reset
+  in one batched write.
+- **Structural bugs re-throw, operational errors flow to `submitError`.**
+  `ReferenceError` / `SyntaxError` thrown inside `onSubmit` are logged via
+  `console.error` and re-thrown. `TypeError` (which is what `fetch()` rejects
+  with on network failure) is captured as a valid `submitError`. Same for any
+  other Error subclass.
+- **`setPath` preserves arrays.** Writing `users.0.name = "Bob"` on a form
+  initialized with `{ users: [{ name: "Ann" }] }` keeps `users` an Array. We
+  test that we don't accidentally overwrite it with `{}` because the path's
+  numeric key is detected.
+- **Lazy field creation works.** Calling `form.field("undeclaredPath")` on a
+  field that wasn't in `initialValues`/`validators`/`fieldOpts` creates it on
+  the spot with `undefined` as its initial value. Use this for forms with a
+  variable shape — though for known fixed shapes, declaring them in
+  `initialValues` is faster.
+- **`setValues` batches.** A `setValues({ a: 1, b: 2, c: 3 })` call triggers
+  exactly one re-evaluation of `isValid`, not three.
+- **Checkbox bridge works out of the box.** `props().onInput` detects
+  `ev.target.type === "checkbox"` and reads `.checked` instead of `.value`.
+- **A `registry` option scopes everything.** If you pass a `createRegistry()`
+  handle, every signal/computed lives in that registry. The default global
+  registry stays untouched. Bind with that registry's `effect` to wire to
+  your renderer.
+
+---
+
+## What this is **not**
+
+- **Not a renderer.** lite-form gives you state; you decide how to render. Pair
+  with `@zakkster/lite-signal-dom`, `@zakkster/lite-element`, vanilla
+  `addEventListener`, or your framework of choice.
+- **Not async-validated.** `validators` and `validate` are sync. For async
+  business rules (server-side uniqueness checks, etc.), use
+  [@zakkster/lite-resource](https://www.npmjs.com/package/@zakkster/lite-resource)
+  inside an effect that reads the form's values.
+- **Not a field-array helper.** Dotted paths work for nested objects and
+  arrays, but if you need `<FieldArray>`-style adds/removes/reorders with
+  preserved field identity, that's a future `@zakkster/lite-form-fields`
+  package.
+- **Not a schema library.** Bring your own (Zod / Yup / Valibot / hand-rolled).
+  lite-form just calls your `validate` function once per change.
+- **Not a wizard / multi-step form runtime.** A wizard is multiple forms
+  composed together. Build it with two `createForm()` calls and your own
+  navigation state.
+
+---
+
+## Browser / runtime support
+
+| target           | works | notes                                      |
+|------------------|:-----:|--------------------------------------------|
+| Node ≥ 18        | ✅    | `structuredClone` available since 17       |
+| Chrome / Edge    | ✅    | All evergreen versions                     |
+| Firefox          | ✅    | All evergreen versions                     |
+| Safari ≥ 15.4    | ✅    | `structuredClone` shipped 15.4             |
+| Deno / Bun       | ✅    | ESM + standard JS only                     |
+
+ESM only. No CJS build. If you need CJS, bundle through esbuild/rollup.
+
+---
+
+## Peer dependency
+
+```json
+"peerDependencies": { "@zakkster/lite-signal": "^1.1.3" }
+```
+
+That's it. lite-form is ~280 lines on top of lite-signal's primitives.
+
+---
+
+## FAQ
+
+**Q: Why is `field()` not async / lazy?**
+Fields are eagerly allocated from `initialValues` + `validators` + `fieldOpts`
+during `createForm()`. lite-signal 1.2.0's owner tree makes any node created
+inside a re-running effect a CHILD of that effect (disposed on its next run),
+and 1.2.0 has no `createRoot` / `runWithOwner` to detach ownership. Lazy
+per-field allocation inside a render effect would self-destruct. Forms have a
+known, bounded field set anyway, so eager allocation is right regardless.
+
+**Q: Can I use `field()` for paths not in `initialValues`?**
+Yes. `field("undeclared")` creates the field lazily on first access. It just
+won't have a per-field validator unless you also declared one. Useful for
+forms with variable shape — but if the shape is fixed, declaring up front is
+slightly faster (no Map lookup miss).
+
+**Q: How do I integrate Zod / Yup / Valibot?**
+Adapter is 4 lines. See [Schema (Zod / Yup)](#schema-zod--yup). Your library's
+parse function runs once per change inside lite-form's hoisted computed.
+
+**Q: What's the difference between `error()` and `rawError()`?**
+`error()` is reveal-gated by `validateOn` — null if the field isn't yet
+revealed. `rawError()` is always live. Use `error()` to drive your DOM display,
+`rawError()` for anything that needs true validity (the form-level `isValid`
+already wraps this for you).
+
+**Q: Why does `validate` return a flat path map instead of nested errors?**
+Flat keys make the field-side `formErrors[path]` lookup O(1) and structurally
+cutoff-friendly. Wrap your schema's error shape in your adapter; Zod's
+`issues[i].path.join(".")` is what most folks land on.
+
+**Q: I want to track `value` changes outside of effects (e.g. autosave debounce).**
+Use `value.subscribe(fn)` — it's a real lite-signal subscribe; returns an
+unsubscribe function. Or wrap it in an effect with your debounce. lite-form
+doesn't ship a debounce helper because [@zakkster/lite-debounce](https://www.npmjs.com/package/@zakkster/lite-debounce)
+already does (a future package; for now `setTimeout` + `clearTimeout` is fine).
+
+**Q: How do I dispose a form?**
+Call `form.dispose()`. Every signal and computed is freed; the pool returns to
+baseline. It's idempotent — safe to call twice. If you're scoping a form to a
+component lifecycle, register `form.dispose` as the cleanup.
+
+**Q: Why is `submitAttempted` writable?**
+So you can force-reveal errors without actually calling `submit()`. Useful if
+you have an "are you sure?" preview step that needs to highlight invalid
+fields before the actual submit.
+
+**Q: I called `submit()` twice and my server got two requests. Bug?**
+Working as designed — `submit()` is not internally deduped. lite-form holds
+no in-flight lock; concurrent calls fire `onSubmit` concurrently. See
+[Double-submit defense](#double-submit-defense-concurrent-submit-is-a-footgun)
+for the three patterns (button-disable, `@zakkster/lite-throttle`, or an
+`isSubmitting.peek()` guard). If you only have a button, disabling it on
+`isSubmitting()` is enough; if `submit()` is reachable from a hotkey or
+multiple handlers, throttle is the safer answer.
+
+**Q: How do I do `setFieldError("username", "already taken")` from my
+server response?**
+You don't — lite-form has no imperative error-setter. Use the
+[external-signal pattern](#surfacing-server-errors-the-setfielderror-story):
+hold the server error in a `signal()`, read it from your per-field validator,
+flip it when the server responds. The validator re-runs automatically (the
+signal read is tracked). Disposal is automatic; race conditions don't exist.
+It ends up being less code than a `setFieldError` API would be — see the
+section for a full example.
+
+---
+
+## License
+
+MIT © Zahary Shinikchiev
+
+---
+
+#### The @zakkster stack
+
+- [@zakkster/lite-signal](https://www.npmjs.com/package/@zakkster/lite-signal) — the reactive primitives this all builds on
+- [@zakkster/lite-element](https://www.npmjs.com/package/@zakkster/lite-element) — Custom Elements with state that survives reparents
+- [@zakkster/lite-time](https://www.npmjs.com/package/@zakkster/lite-time) — drift-corrected wall-clock cadence
+- **@zakkster/lite-form** — *this package*

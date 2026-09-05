@@ -1,0 +1,308 @@
+# @zakkster/lite-form
+
+Headless reactive forms for `@zakkster/lite-signal`. Form STATE as fine-grained
+signals; bind to any DOM/renderer. No virtual DOM, no template compiler. Typing
+in one field of a 100-field form runs exactly one validator. A form-level
+schema (Zod/Yup-shaped) is hoisted into a single computed that runs once per
+keystroke, not once per field.
+
+ESM-only. Node ≥ 18. Single file `Form.js`, ~240 lines, ~3 KB minified.
+Peer dependency: `@zakkster/lite-signal ^1.1.3`.
+
+## Install
+
+    npm i @zakkster/lite-form @zakkster/lite-signal
+
+## Imports
+
+    import { createForm } from "@zakkster/lite-form";
+
+## Exports
+
+### `createForm(config?) → Form`
+
+Build a reactive form. Eagerly allocates one signal + per-field computeds for
+every leaf in `initialValues`, every key in `validators`, and every key in
+`fieldOpts`. Returns a `Form` handle.
+
+Config (all optional):
+
+- `initialValues: object` — default `{}`. Dotted paths supported; leaf values
+  become the initial signal values.
+- `validators: Record<string, (value, ctx) => string | null>` — per-field. The
+  `ctx.get(path)` accessor reads another field's value AND records a dependency.
+- `validate: (values) => Record<string, string | null>` — form-level schema.
+  Hoisted to ONE computed; runs once per keystroke.
+- `fieldOpts: Record<string, { parse?, format? }>` — per-field input transforms,
+  applied at the `props()` boundary.
+- `validateOn: "change" | "blur" | "submit"` — error display gating (does NOT
+  affect `isValid()`, which is always live). Default `"change"`.
+- `onSubmit: (values) => void | Promise<void>` — invoked from `submit()` if
+  valid. Called untracked (its signal reads don't leak into the caller).
+- `registry: createRegistry() handle` — scope every signal/computed to this
+  registry instead of the default. Bind with that registry's `effect`.
+
+## Field interface (`form.field(path)`)
+
+Fields are reactive state for one form field. Created eagerly for declared
+paths; created lazily on first `.field(path)` for undeclared paths.
+
+    field.path                  // string
+    field.value                 // WritableSignal<T>  (value() reads+tracks; value.peek() untracked)
+    field.error                 // ReadSignal<string|null>  reveal-gated display
+    field.rawError              // ReadSignal<string|null>  always-live validity
+    field.dirty                 // ReadSignal<boolean>  value !== initial
+    field.touched               // ReadSignal<boolean>  blurred at least once
+    field.set(v)                // write
+    field.blur()                // mark touched (does not validate; affects display reveal)
+    field.reset()               // back to initial value; clears touched
+    field.props()               // { value, onInput(ev), onBlur() } — spread onto an <input>
+
+`props().onInput` knows about checkbox inputs (`ev.target.type === "checkbox"`
+→ uses `.checked` instead of `.value`).
+
+## Form interface
+
+    form.field(path)            // get / lazy-create a Field
+    form.values()               // untracked snapshot (deep-cloned from initialValues, leaf-overridden)
+    form.setValues({path: v})   // batched multi-set
+    form.reset()                // restore initialValues; clear touched, submitAttempted, submitError
+    form.submit(ev?)            // Promise<boolean>  preventDefault + validate + onSubmit
+    form.isValid                // ReadSignal<boolean>  always live
+    form.isDirty                // ReadSignal<boolean>  any field differs from initial
+    form.isSubmitting           // ReadSignal<boolean>  async onSubmit in flight
+    form.submitError            // ReadSignal<Error|null>  last operational throw
+    form.submitAttempted        // WritableSignal<boolean>  set true to force-reveal all errors
+    form.dispose()              // free every signal/computed; idempotent
+
+## Validation modes
+
+`validateOn` controls when `field.error()` becomes non-null. `isValid()` is
+unaffected and always reflects true validity:
+
+- `"change"` (default) — reveals once `dirty()` is true
+- `"blur"` — reveals once `touched()` is true
+- `"submit"` — reveals only after `submitAttempted()` flips true
+
+`submit()` sets `submitAttempted = true`, which force-reveals everything
+regardless of mode. `reset()` clears it again.
+
+## Submit lifecycle
+
+`submit(ev?)` does, in order:
+
+1. `ev.preventDefault()` if `ev` is provided
+2. `submitAttempted.set(true)` — reveals all errors
+3. If `!isValid()` (read untracked) → return `false`. No call to `onSubmit`.
+4. If no `onSubmit` configured → return `true`
+5. `isSubmitting.set(true)`, `submitError.set(null)`
+6. `await onSubmit(values())` — called inside `untrack`
+7. On resolve → return `true`
+8. On `ReferenceError` / `SyntaxError` → `console.error` + re-throw (structural
+   bugs, not legitimate submission outcomes)
+9. On other throws (including `TypeError` from fetch network failure) →
+   `submitError.set(err)`, return `false`
+10. Finally → `isSubmitting.set(false)`
+
+## Key invariants
+
+- **Eager field allocation.** All declared fields exist after `createForm()`
+  returns. Lazy creation is supported via `field(undeclared)` but is slower
+  on first access.
+- **Schema is hoisted.** With `validate` configured, the schema runs exactly
+  ONCE per keystroke via a shared computed. Each field reads `schema[path]` as
+  an O(1) lookup with Object.is cutoff.
+- **Reveal-gated display, live validity.** `field.error()` returns null when
+  not revealed; `field.rawError()` always reflects real validity. `form.isValid()`
+  reads `rawError`s, not `error`s.
+- **Pristine fields don't run validators.** When `field.error()` short-circuits
+  on the reveal gate, it never reads `rawError()`, so the validator is never
+  called for that field. Only dirty/touched/submit-attempted fields validate.
+- **`submit` and `onSubmit` are untracked.** Calling `submit()` from inside an
+  effect doesn't subscribe that effect to internal form state. Your `onSubmit`
+  can read other signals (auth.token, etc.) without leaking dependencies.
+- **`registry` option is fully respected.** All signals, computeds, and
+  internal batching/untrack go through the provided registry. Default registry
+  stays untouched.
+- **`dispose()` is idempotent and complete.** All owned signals/computeds are
+  freed; field map cleared. Calling twice is a no-op.
+- **`submit()` is NOT internally deduped.** Two concurrent `submit()` calls
+  fire `onSubmit` twice, both racing on the same `values()` snapshot. Guard
+  via `isSubmitting` (UI), `@zakkster/lite-throttle` (hotkeys/programmatic),
+  or an early-return on `isSubmitting.peek()`. See the recipe below.
+
+## Recipes
+
+### Sign-in form (vanilla DOM)
+
+    import { createForm } from "@zakkster/lite-form";
+    import { effect } from "@zakkster/lite-signal";
+
+    const form = createForm({
+        initialValues: { email: "", password: "" },
+        validators: {
+            email:    (v) => /@/.test(v) ? null : "invalid email",
+            password: (v) => v.length >= 8 ? null : "min 8 chars",
+        },
+        onSubmit: async (vals) => fetch("/api/login", {
+            method: "POST", body: JSON.stringify(vals),
+        }),
+    });
+
+    for (const name of ["email", "password"]) {
+        const f = form.field(name);
+        const inp = document.getElementById(name);
+        const err = document.getElementById(name + "-error");
+        inp.addEventListener("input", (ev) => f.set(ev.target.value));
+        inp.addEventListener("blur", () => f.blur());
+        effect(() => { inp.value = f.value(); });
+        effect(() => { err.textContent = f.error() || ""; });
+    }
+
+### Number input with parse/format
+
+    createForm({
+        initialValues: { age: 0 },
+        fieldOpts: {
+            age: {
+                parse:  (raw) => Number(raw),
+                format: (val) => String(val),
+            },
+        },
+    });
+
+`props().onInput` calls `parse`; `props().value` returns the `format`'d view.
+
+### Password + confirm (cross-field)
+
+    createForm({
+        initialValues: { pw: "", confirm: "" },
+        validators: {
+            confirm: (v, { get }) => v === get("pw") ? null : "must match",
+        },
+    });
+
+Typing in `pw` re-validates `confirm`. `ctx.get` records the dependency on
+read; no manual subscription required.
+
+### Zod integration
+
+    import { z } from "zod";
+    const schema = z.object({
+        email: z.string().email(),
+        age:   z.number().min(18),
+    });
+
+    const form = createForm({
+        initialValues: { email: "", age: 0 },
+        validate: (values) => {
+            const r = schema.safeParse(values);
+            if (r.success) return {};
+            return Object.fromEntries(
+                r.error.issues.map(i => [i.path.join("."), i.message])
+            );
+        },
+    });
+
+The schema runs once per keystroke regardless of field count.
+
+### Yup integration
+
+    import * as yup from "yup";
+    const schema = yup.object({ email: yup.string().email().required() });
+
+    createForm({
+        initialValues: { email: "" },
+        validate: (values) => {
+            try { schema.validateSync(values, { abortEarly: false }); return {}; }
+            catch (e) {
+                return Object.fromEntries(e.inner.map(i => [i.path, i.message]));
+            }
+        },
+    });
+
+### Registry-scoped form (multi-form isolation)
+
+    import { createRegistry } from "@zakkster/lite-signal";
+
+    const reg = createRegistry({ maxNodes: 1024, maxLinks: 4096 });
+    const form = createForm({ initialValues, validators, registry: reg });
+    // Bind with reg.effect(), not the default effect:
+    reg.effect(() => /* read form.field(...).value() */);
+    // ...later:
+    form.dispose();   // returns reg.stats().activeNodes to baseline
+
+### Force-reveal errors before submit
+
+    form.submitAttempted.set(true);
+    // Every field.error() now reads its rawError(); display is no longer gated.
+
+### Dispose on cleanup
+
+    // In a component / effect / route teardown:
+    onCleanup(() => form.dispose());
+
+### Surfacing server errors WITHOUT a setFieldError API
+
+    // lite-form has no setFieldError() method — it doesn't need one. Per-field
+    // validators run inside a computed, so any signal they read is TRACKED.
+    // Hold the server error in a signal; flip it from your fetch handler.
+    const serverErr = signal(null);            // null | "username taken" | ...
+
+    const form = createForm({
+        initialValues: { username: "" },
+        validators: {
+            username: (v) => {
+                if (!v) return "required";
+                return serverErr() || null;     // tracked → re-validates on flip
+            },
+        },
+    });
+
+    // After a 409 response:
+    serverErr.set("already taken");             // field.error() updates automatically
+    // Clear it when the user edits:
+    effect(() => { form.field("username").value(); serverErr.set(null); });
+
+    // This pattern is strictly nicer than setFieldError(): no method call, no
+    // race between programmatic write and reactive validate, and disposal is
+    // automatic (the server signal is just a normal lite-signal handle).
+
+### Defending against double-submit (concurrent submit IS a real footgun)
+
+    // submit() is NOT internally deduped. Calling it twice while one is in
+    // flight fires onSubmit TWICE — both promises return true; both fetches
+    // race. Three documented defenses:
+    //
+    // 1) Disable the submit button via the reactive `isSubmitting` signal:
+    effect(() => { btn.disabled = form.isSubmitting(); });
+    //
+    // 2) Throttle the handler — @zakkster/lite-throttle is the matching tool:
+    const guardedSubmit = throttle(() => form.submit(), { leading: true, trailing: false });
+    formEl.addEventListener("submit", (e) => { e.preventDefault(); guardedSubmit(); });
+    //
+    // 3) Guard inside your own handler with `form.isSubmitting.peek()`:
+    function onSubmit(e) {
+        e.preventDefault();
+        if (form.isSubmitting.peek()) return;
+        form.submit();
+    }
+    //
+    // Pick (1) for UI forms (button stays disabled until the request settles),
+    // (2) for programmatic / hotkey submits (Enter key in two places).
+
+## Performance (Node 22 measured)
+
+- Create + dispose, small (3 fields): ~210K ops/sec, ~260 B transient, ~2 B retained
+- Create + dispose, large (100 fields): ~1.3K ops/sec, ~9 KB transient, ~1 B retained
+- Keystroke on 1 of 100 fields (per-field validators): **~1.5M ops/sec**
+- Keystroke on 1 of 100 fields (form-level schema, hoisted): ~30K ops/sec
+- Cross-field validation (pw + confirm): ~5M ops/sec
+- Pure-JS handwritten baseline (runs all 100 validators): ~180K ops/sec
+- Speedup over handwritten pattern: ~8×
+
+Pool clean: `stats().activeNodes === 0` after every bench run.
+
+## License
+
+MIT © Zahary Shinikchiev
