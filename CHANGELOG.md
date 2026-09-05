@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 - 2026-09-05
 
 Engine swap (S2). The value core now rides a `@zakkster/lite-project` projection
 over the S1 detached baseline. The public API is frozen: every S1 contract
