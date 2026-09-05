@@ -6,7 +6,7 @@ in one field of a 100-field form runs exactly one validator. A form-level
 schema (Zod/Yup-shaped) is hoisted into a single computed that runs once per
 keystroke, not once per field.
 
-ESM-only. Node ≥ 18. Single file `Form.js`, ~240 lines, ~3 KB minified.
+ESM-only. Node >= 18. Single file `Form.js`, 328 lines, ~3 KB minified.
 Peer dependency: `@zakkster/lite-signal ^1.1.3`.
 
 ## Install
@@ -308,6 +308,13 @@ The schema runs once per keystroke regardless of field count.
 - Speedup over handwritten pattern: ~8×
 
 Pool clean: `stats().activeNodes === 0` after every bench run.
+
+## Testing
+
+41 deterministic tests (`node:test`): `npm test`. Plus the torture gate:
+`npm run torture` (node --expose-gc --preserve-symlinks test/torture.mjs) which
+proves zero-GC keystrokes (@zakkster/lite-gc-profiler) and zero-leak teardown
+(@zakkster/lite-leak). `npm run verify` runs both.
 
 ## License
 

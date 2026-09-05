@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@zakkster/lite-form.svg?style=for-the-badge&color=latest)](https://www.npmjs.com/package/@zakkster/lite-form)
 [![sponsor](https://img.shields.io/badge/sponsor-PeshoVurtoleta-ea4aaa.svg?logo=github)](https://github.com/sponsors/PeshoVurtoleta)
 [![zero-gc](https://img.shields.io/badge/zero--GC-steady--state-5fe39f.svg)](#why-this-exists)
-[![npm bundle size](https://img.shields.io/bundlephobia/minzip/@zakkster/lite-form?style=for-the-badge)](https://bundlephobia.com/result?p=@zakkster/lite-resource)
+[![npm bundle size](https://img.shields.io/bundlephobia/minzip/@zakkster/lite-form?style=for-the-badge)](https://bundlephobia.com/result?p=@zakkster/lite-form)
 [![npm downloads](https://img.shields.io/npm/dm/@zakkster/lite-form?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-form)
 [![npm total downloads](https://img.shields.io/npm/dt/@zakkster/lite-form?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-form)
 ![TypeScript](https://img.shields.io/badge/TypeScript-Types-informational?style=flat-square)
@@ -85,7 +85,7 @@ A small set of design constraints picked deliberately:
   — drives a submit button correctly from the first render. A field's
   `error()` is reveal-gated (`change` / `blur` / `submit`), so a pristine form
   doesn't scream "required" at the user before they've touched anything.
-- **No DOM. No renderer.** lite-form ships ~280 lines of pure state. Bind it
+- **No DOM. No renderer.** lite-form ships ~329 lines of pure state. Bind it
   with `@zakkster/lite-signal-dom`, `@zakkster/lite-element`, hand-written
   `addEventListener`, or whatever you want. Forms are state, not components.
 - **Pool-clean teardown.** `form.dispose()` frees every signal and computed.
@@ -512,6 +512,39 @@ Measured on Node 22.22 with `--expose-gc`. Run yourself: `npm run bench`.
 
 ---
 
+## Testing
+
+lite-form ships **41 deterministic tests** (`node:test`, zero runtime deps):
+
+```sh
+npm test          # the fast suite
+npm run torture   # plus the torture gate: npm run torture
+npm run verify    # test + torture, the full gate
+```
+
+The torture gate (`test/torture.mjs`) proves the zero-GC and zero-leak claims
+with `@zakkster/lite-gc-profiler` (a keystroke allocates nothing, provokes no
+major GC) and `@zakkster/lite-leak` (every disposed form's field records are
+collectable). It runs under `--expose-gc --preserve-symlinks`.
+
+**Development wiring.** The witness peers and the signal core are linked as local
+symlinks so the gate measures the real, single lite-signal instance:
+
+```sh
+ln -s ../../../LiteSignal      node_modules/@zakkster/lite-signal
+ln -s ../../../LiteLeak        node_modules/@zakkster/lite-leak
+ln -s ../../../LiteGCProfiler  node_modules/@zakkster/lite-gc-profiler
+```
+
+Run the gate with `--preserve-symlinks` so Form.js and the harness resolve the
+same lite-signal (a duplicate instance would make the witnesses vacuous):
+
+```sh
+node --expose-gc --preserve-symlinks test/torture.mjs
+```
+
+---
+
 ## Edge cases pinned down
 
 - **`dispose()` is idempotent.** Calling it twice is safe; the second call is
@@ -585,7 +618,7 @@ ESM only. No CJS build. If you need CJS, bundle through esbuild/rollup.
 "peerDependencies": { "@zakkster/lite-signal": "^1.1.3" }
 ```
 
-That's it. lite-form is ~280 lines on top of lite-signal's primitives.
+That's it. lite-form is ~329 lines on top of lite-signal's primitives.
 
 ---
 
@@ -624,7 +657,7 @@ cutoff-friendly. Wrap your schema's error shape in your adapter; Zod's
 Use `value.subscribe(fn)` — it's a real lite-signal subscribe; returns an
 unsubscribe function. Or wrap it in an effect with your debounce. lite-form
 doesn't ship a debounce helper because [@zakkster/lite-debounce](https://www.npmjs.com/package/@zakkster/lite-debounce)
-already does (a future package; for now `setTimeout` + `clearTimeout` is fine).
+already does (published; or `setTimeout` + `clearTimeout` if you'd rather not add a dep).
 
 **Q: How do I dispose a form?**
 Call `form.dispose()`. Every signal and computed is freed; the pool returns to

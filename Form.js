@@ -1,17 +1,17 @@
 /**
- * @zakkster/lite-form · headless reactive forms for @zakkster/lite-signal
+ * @zakkster/lite-form -- headless reactive forms for @zakkster/lite-signal
  * v1.0.1
- * ─────────────────────────────────────────────────────────────────────────────
- * Form STATE as fine-grained signals. No DOM, no virtual DOM, no compiler — bind
+ * -----------------------------------------------------------------------------
+ * Form STATE as fine-grained signals. No DOM, no virtual DOM, no compiler -- bind
  * the field signals with @zakkster/lite-signal-dom (or anything). The only hard
  * dependency is lite-signal core; async validation (lite-resource), field arrays,
  * and draft persistence (lite-persist) layer on top without bloating this core.
  *
  * TWO VALIDATION MODES, both cutoff-gated:
- *  • Per-field validators (`validators[path]`) — each reads ONLY its own value, so
+ *  - Per-field validators (`validators[path]`) -- each reads ONLY its own value, so
  *    typing in one field runs exactly one validator. Zero allocation on the
  *    keystroke path.
- *  • Form-level schema (`validate(values)` → { path: message }), e.g. Zod/Yup —
+ *  - Form-level schema (`validate(values)` -> { path: message }), e.g. Zod/Yup --
  *    HOISTED into a single `formErrors` computed that runs the schema ONCE per
  *    keystroke (not once per field). Each field reads formErrors[path] as an O(1)
  *    lookup; lite-signal's Object.is cutoff means only fields whose error actually
@@ -21,10 +21,10 @@
  * isValid); the SHOWN error is reveal-gated (validateOn + submit-attempted) so a
  * pristine form doesn't scream "required" everywhere.
  *
- * FIELD ALLOCATION — eager, by design. Fields are created once, up front, from
+ * FIELD ALLOCATION -- eager, by design. Fields are created once, up front, from
  * initialValues + validators + fieldOpts. lite-signal 1.2.0's owner tree makes any
  * node created inside a re-running effect a CHILD of that effect (disposed on its
- * next run), and 1.2.0 has no createRoot/runWithOwner to detach ownership — so lazy
+ * next run), and 1.2.0 has no createRoot/runWithOwner to detach ownership -- so lazy
  * per-field allocation inside a render effect would self-destruct. Forms have a
  * known, bounded field set, so eager allocation is right regardless. (This is also
  * why per-field options live in config, not in field() calls: the field already
@@ -34,7 +34,7 @@
  * effects and lite-signal-dom (tracking is per-registry). Pass `registry` to
  * scope it; then bind with that registry's effect. dispose() frees every node.
  *
- * MIT © Zahary Shinikchiev
+ * MIT (c) Zahary Shinikchiev
  */
 import {
     signal as dSignal, computed as dComputed, batch as dBatch, untrack as dUntrack, dispose as dDispose,
@@ -44,7 +44,7 @@ export const VERSION = "1.0.1";
 
 const NULL = () => null;                                  // shared "no validator" error source
 const EMPTY = {};                                         // shared empty errors / opts
-const normErr = (e) => (e ? e : null);                    // falsy (undefined/false/"") → null
+const normErr = (e) => (e ? e : null);                    // falsy (undefined/false/"") -> null
 const eq = Object.is;
 const isPlainObj = (v) => v != null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date);
 
@@ -293,7 +293,7 @@ export function createForm(config = {}) {
             await U(() => onSubmit(values()));
             return true;
         } catch (err) {
-            // Structural code bugs aren't legitimate submission outcomes — surface them
+            // Structural code bugs aren't legitimate submission outcomes -- surface them
             // loudly instead of hiding them in submitError. TypeError is deliberately
             // NOT here: the browser fetch() API rejects with a TypeError on network
             // failure, and that IS valid submitError content.
@@ -309,16 +309,16 @@ export function createForm(config = {}) {
     }
 
     return {
-        field: getField,                                  // field(path) → field record
-        values,                                           // values() → snapshot (untracked)
+        field: getField,                                  // field(path) -> field record
+        values,                                           // values() -> snapshot (untracked)
         setValues,                                        // setValues({path: v, ...}) (batched)
-        reset,                                            // reset() → back to initialValues
-        submit,                                           // submit(ev?) → Promise<boolean> (validates, then onSubmit)
-        isValid,                                          // isValid() → reactive boolean (true validity)
-        isDirty,                                          // isDirty() → reactive boolean
-        isSubmitting: submitting,                         // isSubmitting() → reactive boolean
-        submitError: submitErr,                           // submitError() → last submit throw, or null
-        submitAttempted,                                  // submitAttempted() → reactive boolean
+        reset,                                            // reset() -> back to initialValues
+        submit,                                           // submit(ev?) -> Promise<boolean> (validates, then onSubmit)
+        isValid,                                          // isValid() -> reactive boolean (true validity)
+        isDirty,                                          // isDirty() -> reactive boolean
+        isSubmitting: submitting,                         // isSubmitting() -> reactive boolean
+        submitError: submitErr,                           // submitError() -> last submit throw, or null
+        submitAttempted,                                  // submitAttempted() -> reactive boolean
         dispose: () => {
             for (const h of owned) D(h);
             owned.length = 0;

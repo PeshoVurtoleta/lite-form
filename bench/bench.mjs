@@ -1,14 +1,14 @@
-// @zakkster/lite-form — bench/bench.mjs
+// @zakkster/lite-form -- bench/bench.mjs
 // Run: node --expose-gc bench/bench.mjs
 //
 // Honest, scoped measurements. Correctness claims (schema is hoisted, only the
 // changed field re-validates) are proved by the test suite. The bench measures
 // only what users care about timing-wise:
 //
-//   • Form lifecycle cost (create + dispose)
-//   • Keystroke throughput on a non-trivial form
-//   • Cross-field validation throughput
-//   • A pure-JS baseline showing the work lite-form's caching avoids
+//   - Form lifecycle cost (create + dispose)
+//   - Keystroke throughput on a non-trivial form
+//   - Cross-field validation throughput
+//   - A pure-JS baseline showing the work lite-form's caching avoids
 //
 // Each scenario reports transient bytes (peak before GC) and retained bytes
 // (after a major GC), so the numbers tell you both alloc pressure AND leak risk.
@@ -24,12 +24,12 @@ const WARMUP_RATIO = 0.05;
 const required = (v) => (v ? null : "required");
 const email = (v) => (!v ? "required" : /@/.test(v) ? null : "invalid email");
 
-// ─── Memory helpers ───────────────────────────────────────────────────
+// --- Memory helpers ---------------------------------------------------
 function gc() { if (global.gc) global.gc(); }
 function mem() { return process.memoryUsage().heapUsed; }
 
 function fmtBytes(n) {
-    if (!isFinite(n)) return "—";
+    if (!isFinite(n)) return "-";
     const a = Math.abs(n);
     if (a >= 1_000_000) return (n / 1_000_000).toFixed(2) + " MB";
     if (a >= 1_000) return (n / 1_000).toFixed(2) + " KB";
@@ -71,7 +71,7 @@ function reportRow(r) {
     );
 }
 
-// ─── Scenarios ────────────────────────────────────────────────────────
+// --- Scenarios --------------------------------------------------------
 
 // A) Create + dispose a small form. Measures lifecycle: eager field
 //    allocation, signal/computed setup, dispose returns pool to baseline.
@@ -112,7 +112,7 @@ function scenarioB() {
 
 // C) THE headline result. 100-field form, type only in f0, repeated N times.
 //    Every field has a per-field validator AND an active error subscriber.
-//    Demonstrates: typing in one field of a large form is O(1) — only f0's
+//    Demonstrates: typing in one field of a large form is O(1) -- only f0's
 //    validator runs, the rest are untouched (their reveal-gated error()
 //    short-circuits before reading rawError).
 function scenarioC() {
@@ -139,7 +139,7 @@ function scenarioC() {
                     k++;
                     // Toggle between two non-empty strings so the error stays
                     // null and we exercise the cutoff path. This is realistic
-                    // typing — validity doesn't flip on every keystroke.
+                    // typing -- validity doesn't flip on every keystroke.
                     fld.set("v" + (k & 1));
                 },
                 teardown: () => { stops.forEach(s => s()); f.dispose(); },
@@ -209,7 +209,7 @@ function scenarioE() {
     );
 }
 
-// F) Pure-JS baseline — what a hand-written form does without reactivity:
+// F) Pure-JS baseline -- what a hand-written form does without reactivity:
 //    on every input, store the value AND re-run every validator AND notify
 //    every "rendered" field component. This is what you'd write yourself in
 //    plain JS / what a form library does if it doesn't cache. lite-form's job
@@ -255,10 +255,10 @@ function scenarioF() {
     );
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────
+// --- Main -------------------------------------------------------------
 console.log("");
-console.log("@zakkster/lite-form — benchmark");
-console.log(`Node: ${process.version} · ${new Date().toISOString()}`);
+console.log("@zakkster/lite-form -- benchmark");
+console.log(`Node: ${process.version} - ${new Date().toISOString()}`);
 console.log("");
 console.log(`Pre-bench activeNodes: ${stats().activeNodes}`);
 console.log("");
@@ -270,7 +270,7 @@ console.log(
     "  transient/op",
     "    retained/op",
 );
-console.log("─".repeat(135));
+console.log("-".repeat(135));
 
 const rows = [scenarioA(), scenarioB(), scenarioC(), scenarioD(), scenarioE(), scenarioF()];
 for (const r of rows) reportRow(r);
@@ -280,11 +280,11 @@ console.log("");
 gc();
 const finalNodes = stats().activeNodes;
 const poolClean = finalNodes === 0;
-console.log(`Post-bench activeNodes: ${finalNodes} · ${poolClean ? "✓ pool clean" : "⚠ residual nodes"}`);
+console.log(`Post-bench activeNodes: ${finalNodes} - ${poolClean ? "[ok] pool clean" : "[!] residual nodes"}`);
 
 const C = rows[2], F = rows[5];
 console.log("");
 console.log(`Keystroke throughput on a ${N_FIELDS_LARGE}-field form: ${Math.round(C.ops).toLocaleString()} ops/sec`);
 console.log(`vs pure-JS handwritten "run all validators":  ${Math.round(F.ops).toLocaleString()} ops/sec`);
-console.log(`Speedup over the handwritten pattern:         ${(C.ops / F.ops).toFixed(1)}× (lite-form runs 1 validator instead of ${N_FIELDS_LARGE})`);
+console.log(`Speedup over the handwritten pattern:         ${(C.ops / F.ops).toFixed(1)}x (lite-form runs 1 validator instead of ${N_FIELDS_LARGE})`);
 console.log("");

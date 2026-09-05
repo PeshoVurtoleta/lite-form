@@ -1,5 +1,5 @@
 /**
- * @zakkster/lite-form · type declarations
+ * @zakkster/lite-form -- type declarations
  *
  * Field values are addressed by string path, so v1 types them as `any` (a
  * schema-inferred, per-path-typed overload is a future enhancement). The signal
@@ -37,7 +37,7 @@ export interface FieldContext {
 /** A validator returns a message string when invalid, or a falsy value when valid. */
 export type Validator = (value: any, ctx: FieldContext) => string | null | false | undefined | void;
 
-/** A form-level schema (e.g. a Zod/Yup adapter): receives all values, returns a map of path → message. Run ONCE per change. */
+/** A form-level schema (e.g. a Zod/Yup adapter): receives all values, returns a map of path -> message. Run ONCE per change. */
 export type SchemaValidate = (values: Record<string, any>) => Record<string, string | null | false | undefined>;
 
 /** Per-field input transforms, applied at the props() boundary. */

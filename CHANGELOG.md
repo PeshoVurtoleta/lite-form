@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Torture gate: `test/torture.mjs` entry + 7 tiers (t0 laws, t1 degenerate,
+  t2 scale, t5 fuzz, t6 alloc, t7 soak, t9 controls) + 4 spawned controls
+  (grow/alloc/drop/leak).
+- devDependencies `@zakkster/lite-leak` and `@zakkster/lite-gc-profiler`.
+- Scripts `torture`, `verify`, `prepublishOnly`.
+- README Testing section and development/wiring notes (symlink the peers, run
+  the gate with `--preserve-symlinks`).
+
+### Changed
+- `verify` now runs the torture gate (`npm test && npm run torture`) instead of
+  the bench.
+- Author email set to `<shinikchiev@yahoo.com>`.
+- ASCII-only source pass across Form.js, Form.d.ts, and bench/bench.mjs.
+- Doc corrections: real line count (328) and test count (41 deterministic
+  tests) in README.md and llms.txt; bundlephobia badge repointed to lite-form;
+  lite-debounce noted as published.
+
 ## 1.0.1 - 2026-09-05
 
 Security hotfix -- prototype pollution (LF-01).
