@@ -32,6 +32,15 @@ import { measureOps, checkNoGc } from "@zakkster/lite-gc-profiler";
 import { createRegistry } from "@zakkster/lite-signal";
 
 /**
+ * The module under test. Overridable via FORM_TORTURE_MODULE so the realias /
+ * reproto controls can point every tier at a patched copy of Form.js without a
+ * FORM_TORTURE_BREAK flag. Every tier that touches the form loads it through
+ * loadForm() rather than a static import.
+ */
+export const FORM_URL = process.env.FORM_TORTURE_MODULE || new URL("../../Form.js", import.meta.url).href;
+export async function loadForm() { return import(FORM_URL); }
+
+/**
  * TRANSIENT-GARBAGE WITNESS. V8's new space is a bump allocator: each allocation
  * advances a pointer, and the used-bytes figure only falls when a scavenge runs.
  * So if we gc() to a clean slate, then run a synchronous loop with NO GC between
@@ -59,7 +68,9 @@ export const SEED = (() => {
 /**
  * Deliberately-broken control mode: one of "grow" | "alloc" | "drop" | "leak",
  * or "" for a normal run. When set, torture.mjs runs ONLY the targeted tier and
- * never t9 (no recursive spawning).
+ * never t9 (no recursive spawning). The realias / reproto controls instead patch
+ * Form.js itself and select it via FORM_TORTURE_MODULE, so they run a NORMAL
+ * (all-tier) child that must die at t1.
  */
 export const BREAK = process.env.FORM_TORTURE_BREAK || "";
 
@@ -68,7 +79,7 @@ export const BREAK = process.env.FORM_TORTURE_BREAK || "";
  * torture entry's preflight checks README.md and llms.txt against -- a doc that
  * drifts from this number fails the gate instead of sitting silently stale.
  */
-export const FAST_SUITE_COUNT = 41;
+export const FAST_SUITE_COUNT = 53;
 
 /** Base zero-GC rules. maxArrayBuffersGrowth needs measureOps stabilize:'deep'. */
 export const RULES = { maxMajor: 0, maxPauseMs: 4, maxArrayBuffersGrowth: 0 };

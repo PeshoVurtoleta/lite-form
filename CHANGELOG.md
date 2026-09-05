@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased
+
+Fail-closed hardening (S1). The keystroke path is untouched -- every new check
+lives at the construction and snapshot boundaries, not in `set`/`dirty`/`error`.
+
+### Fixed
+- LF-02 unreachable baseline: the caller's `initialValues` is deep-copied once at
+  `createForm` and never aliased or read again; object leaves are copied again at
+  each seed. `reset()` restores pristine copies, so an in-place-mutated object or
+  array leaf is fully restored.
+- LF-03 construction-time config validation: uncopyable and hostile config is
+  rejected at `createForm` with a path-precise `TypeError`, not at some later
+  snapshot (which previously surfaced a `DataCloneError`) or never.
+- LF-04 lazy fields: a `field(path)` for an undeclared path allocated while a
+  tracking context is live is now created inside the form's own
+  `registry.createRoot()`, so its nodes belong to the form and survive effect
+  re-runs instead of being torn down as the effect's own children.
+
+### Changed
+- Every value type that used to work by accident now throws a `TypeError` at
+  `createForm` naming its path: function, Map, Set, RegExp, TypedArray, class
+  instance, symbol. The whitelist is primitives / Array / Date / plain object.
+- Cycle policy deltas: an object-branch cycle was a `RangeError` (stack overflow)
+  -> now a `TypeError` at `createForm`; an array-internal cycle was silently
+  accepted by `structuredClone` -> now a `TypeError`. A shared non-cyclic subtree
+  stays legal (copied independently for each reference).
+- Snapshot boundary: `values()`/`readValues()` materialize by an own-key walk
+  that deep-copies each leaf; an uncopyable runtime value throws a path-naming
+  `TypeError` (replacing the late `DataCloneError` from `structuredClone`).
+- `dirty` contract documented: `!Object.is(value(), initialRef)` against the
+  field's captured initial reference (re-captured on `reset()`); in-place
+  mutation does not flip it, `set(newRef)` does.
+- Peer and dev floor `@zakkster/lite-signal` `^1.5.0` (the version whose
+  `createRoot` makes LF-04 safe). No existing test changed meaning; 12 new tests
+  bring the suite from 41 to 53.
+
+### Added
+- t6 dotted keystroke gate: a 3-segment dotted keystroke is now a hard
+  transient-garbage gate (<= 16384 B / 50,000 ops), not a recorded baseline.
+- t7 lazy-field churn witness.
+- t9 realias / reproto patched-module controls (a reintroduced S1 bug in a
+  patched Form.js copy must die at t1).
+- `decisions/0001-fail-closed.md` recording the six pinned S1 decisions (not
+  shipped; excluded from the `files[]` whitelist).
+
 ## 1.0.2 - 2026-09-05
 
 Gate and hygiene (S0). No behaviour change.

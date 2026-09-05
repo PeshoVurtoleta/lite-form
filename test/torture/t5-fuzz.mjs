@@ -10,8 +10,7 @@
  * -- proving the invariant check can actually catch a wrong verdict.
  */
 
-import { createForm } from "../../Form.js";
-import { BREAK, SEED, check, deepEqual, die, makePrng } from "./harness.mjs";
+import { BREAK, SEED, check, deepEqual, die, loadForm, makePrng } from "./harness.mjs";
 
 const SEEDS = 4;
 const STEPS = 800;
@@ -40,6 +39,7 @@ function freshInitial() {
 }
 
 export async function run() {
+  const { createForm } = await loadForm();
   const drop = BREAK === "drop";
 
   for (let k = 0; k < SEEDS; k++) {

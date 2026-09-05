@@ -1,15 +1,22 @@
 /**
- * t1 -- degenerate shapes and the registered-failing ledger.
+ * t1 -- degenerate shapes and the fail-closed ledger.
  *
  * LF-01 is a PASSING guard witness: prototype-pollution paths throw and cache
- * nothing. LF-02..LF-04 are REGISTERED-FAILING -- each asserts the CURRENT
- * (broken) behaviour so the bug is pinned in the gate; S1 flips each check when
- * the fix lands. A registered-failing test that starts passing silently is how a
- * fix goes unmarked, so these are explicit.
+ * nothing. LF-02..LF-04 were the S0 registered-failing bugs; S1 fixed each, so
+ * every check below now ENFORCES the fixed behaviour:
+ *   LF-02 unreachable baseline -- object leaves are not dirty at construction, a
+ *         value() array cannot reach the caller's initialValues, reset() restores.
+ *   LF-03 construction-time whitelist -- a non-cloneable initialValues throws a
+ *         TypeError at createForm(), never a late DataCloneError.
+ *   LF-04 createRoot-owned lazy fields -- a field allocated inside a re-running
+ *         effect survives that effect's next run.
+ *
+ * t9's realias / reproto controls patch Form.js to reintroduce LF-02 / LF-03 and
+ * assert this tier dies again with the matching "t1 LF-0x" marker, so the marker
+ * prefixes here are load-bearing.
  */
 
-import { createForm } from "../../Form.js";
-import { check, withRegistry } from "./harness.mjs";
+import { check, loadForm, withRegistry } from "./harness.mjs";
 
 const CFG = { maxNodes: 1 << 16, maxLinks: 1 << 18, onCapacityExceeded: "grow" };
 
@@ -18,6 +25,8 @@ function threw(fn) {
 }
 
 export async function run() {
+  const { createForm } = await loadForm();
+
   // --- LF-01: prototype-pollution guard (PASSING witness) ------------------
   withRegistry(CFG, (reg) => {
     const form = createForm({ initialValues: { name: "" }, registry: reg });
@@ -43,33 +52,39 @@ export async function run() {
     form.dispose();
   });
 
-  // --- LF-02: shared-array initialValues alias (REGISTERED-FAILING) ---------
+  // --- LF-02: unreachable baseline (ENFORCED) ------------------------------
   withRegistry(CFG, (reg) => {
     const iv = { tags: ["a"] };
     const form = createForm({ initialValues: iv, registry: reg });
-    form.field("tags").value().push("b"); // mutates the aliased initial array
-    // LF-02 REGISTERED-FAILING -- S1 flips this check.
+    form.field("tags").value().push("b"); // must NOT reach the baseline or the caller's array
     check(form.field("tags").dirty() === false,
-      () => "t1 LF-02: dirty() became true -- the shared-array alias may be fixed; flip this check");
-    check(iv.tags.length === 2,
-      () => "t1 LF-02: caller's initialValues array was NOT mutated -- alias may be fixed; flip this check");
+      () => "t1 LF-02: object-leaf field is dirty at construction");
+    check(iv.tags.length === 1,
+      () => "t1 LF-02: the caller's initialValues array was mutated through field.value() -- the baseline is reachable");
     form.reset();
-    check(form.field("tags").value().length === 2,
-      () => "t1 LF-02: reset() restored a pristine array -- alias may be fixed; flip this check");
+    check(form.field("tags").value().length === 1,
+      () => "t1 LF-02: reset() did not restore a pristine array");
     form.dispose();
   });
 
-  // --- LF-03: non-cloneable initialValues (REGISTERED-FAILING) --------------
+  // --- LF-03: non-cloneable initialValues throws at construction (ENFORCED) --
   withRegistry(CFG, (reg) => {
-    const form = createForm({ initialValues: { cb: () => {} }, registry: reg });
-    const e = threw(() => form.values());
-    // LF-03 REGISTERED-FAILING -- S1 flips this check.
-    check(e !== null && e.name === "DataCloneError",
-      () => "t1 LF-03: values() no longer throws DataCloneError on a function value (got " + (e && e.name) + ") -- flip this check");
-    form.dispose();
+    const e = threw(() => createForm({ initialValues: { cb: () => {} }, registry: reg }));
+    check(e instanceof TypeError,
+      () => "t1 LF-03: non-cloneable initialValues did not throw TypeError at createForm (got " + (e && e.name) + ")");
+
+    // an empty own __proto__ key (JSON.parse route) forms no leaf but must still throw
+    const e2 = threw(() => createForm({ initialValues: JSON.parse('{"__proto__":{}}'), registry: reg }));
+    check(e2 instanceof TypeError,
+      () => "t1 LF-03: empty own __proto__ key was not rejected at createForm (got " + (e2 && e2.name) + ")");
+
+    // the cloneability whitelist rejects a Map at construction, path-named
+    const e3 = threw(() => createForm({ initialValues: { m: new Map() }, registry: reg }));
+    check(e3 instanceof TypeError && e3.message.indexOf('"m"') !== -1,
+      () => "t1 LF-03: a Map value was not rejected with a path-named TypeError at createForm (got " + (e3 && e3.message) + ")");
   });
 
-  // --- LF-04: lazy field() inside an effect self-destructs (REGISTERED-FAILING)
+  // --- LF-04: lazy field() inside an effect is createRoot-owned (ENFORCED) --
   withRegistry(CFG, (reg) => {
     const form = createForm({ initialValues: { keep: 1 }, registry: reg });
     const trig = reg.signal(0);
@@ -78,11 +93,11 @@ export async function run() {
     const before = reg.stats().activeNodes;
     trig.set(1);
     const after = reg.stats().activeNodes;
-    // LF-04 REGISTERED-FAILING -- S1 flips this check.
-    check(after < before,
-      () => "t1 LF-04: activeNodes did not drop after re-running the effect (" + after + " >= " + before + ") -- lazy alloc may be detached now; flip this check");
-    check(form.field("lazyx").value() === undefined,
-      () => "t1 LF-04: field('lazyx') is no longer a zombie (value() !== undefined) -- may be fixed; flip this check");
+    check(after >= before,
+      () => "t1 LF-04: activeNodes dropped after an effect re-run (" + after + " < " + before + ") -- the lazy field was owned by the effect");
+    form.field("lazyx").set("kept");
+    check(form.field("lazyx").value() === "kept",
+      () => "t1 LF-04: lazy field lost its value after the effect re-ran -- it was a zombie owned by the effect");
     form.dispose();
   });
 }

@@ -27,8 +27,10 @@
  * CONTROLS: with FORM_TORTURE_BREAK={grow|alloc|drop|leak} the run executes ONLY
  * the tier that break targets (no recursive spawning) and must exit non-zero; if
  * that tier's gate does NOT catch the breakage, reaching the end is itself a
- * failure (exit 1). A normal run executes every tier and t9 spawns the four
- * broken children, asserting each exits non-zero.
+ * failure (exit 1). Two more controls (realias, reproto) instead patch Form.js
+ * and select it via FORM_TORTURE_MODULE, running a NORMAL child that must die at
+ * t1. A normal run executes every tier and t9 spawns all six broken children,
+ * asserting each exits non-zero for its own gate's reason.
  *
  * @license MIT
  */

@@ -7,12 +7,12 @@
  * the display-vs-validity split holds across all three validateOn modes.
  */
 
-import { createForm } from "../../Form.js";
-import { check, deepEqual, withRegistry } from "./harness.mjs";
+import { check, deepEqual, loadForm, withRegistry } from "./harness.mjs";
 
 const CFG = { maxNodes: 1 << 16, maxLinks: 1 << 18, onCapacityExceeded: "grow" };
 
 export async function run() {
+  const { createForm } = await loadForm();
   withRegistry(CFG, (reg) => {
     // --- identities + idempotence -------------------------------------------
     const base = reg.stats().activeNodes;

@@ -17,9 +17,10 @@
  * close over the tracked target. We pass a null cleanup and a primitive tag.
  */
 
-import { createForm } from "../../Form.js";
 import { createLeakTracker } from "@zakkster/lite-leak";
-import { BREAK, check, withRegistry } from "./harness.mjs";
+import { BREAK, check, loadForm, withRegistry } from "./harness.mjs";
+
+let createForm = null; // bound from loadForm() at run() entry
 
 const CYCLES = 4096;
 const CEIL = { maxNodes: 1 << 15, maxLinks: 1 << 17, onCapacityExceeded: "throw" };
@@ -48,6 +49,8 @@ function churn(tracker, holdLeak) {
 }
 
 export async function run() {
+  createForm = (await loadForm()).createForm;
+
   // --- witness 1: activeNodes conservation over 4096 cycles -----------------
   withRegistry(CEIL, (reg) => {
     const base = reg.stats().activeNodes;
@@ -90,4 +93,61 @@ export async function run() {
     () => "t7: leak audit reported " + tracker.audit().length + " finding(s)");
   check(warns.length === 0,
     () => "t7: leak witness raised " + warns.length + " warning(s)");
+
+  // --- witness 3: lazy-field churn under a re-running effect -----------------
+  // Undeclared fields created INSIDE a re-running effect are createRoot-owned by
+  // the form, not children of the effect, so they survive its re-runs and are
+  // reclaimed by dispose(). Two signals: activeNodes conservation across
+  // build/churn/dispose, and a lite-leak tracker returning to 0.
+  const leaks3 = [];
+  const warns3 = [];
+  const tracker3 = createLeakTracker({
+    name: "t7-lazy",
+    onLeak: (r) => leaks3.push(r.kind),
+    onWarning: (w) => warns3.push(w.kind),
+  });
+  withRegistry(CEIL, (reg) => {
+    const base = reg.stats().activeNodes;
+    const form = createForm({ initialValues: { keep: 0 }, registry: reg });
+    const built = reg.stats().activeNodes;
+    const trig = reg.signal(0);
+    let round = 0;
+    const stop = reg.effect(() => {
+      void trig();
+      for (let i = 0; i < 8; i++) {
+        const fld = form.field("lz" + round + "_" + i); // undeclared: lazyField -> createRoot
+        void fld.value();
+        tracker3.track(fld, null, round * 8 + i, { audit: true }); // primitive tag, null cleanup
+      }
+      round++;
+    });
+    for (let t = 1; t <= 16; t++) trig.set(t); // re-run the effect 16 times
+    check(reg.stats().activeNodes > built,
+      () => "t7: lazy-field churn allocated no nodes (vacuous witness)");
+    // fields from the FIRST round still read/write after every re-run
+    for (let i = 0; i < 8; i++) form.field("lz0_" + i).set(i);
+    for (let i = 0; i < 8; i++) {
+      check(form.field("lz0_" + i).value() === i,
+        () => "t7: lazy field lz0_" + i + " lost its value across effect re-runs");
+    }
+    stop();                       // dispose the effect
+    reg.dispose(trig);            // dispose the trigger signal
+    form.dispose();               // frees every field, declared and lazy
+    const after = reg.stats().activeNodes;
+    check(after === base,
+      () => "t7: lazy-field churn left " + (after - base) + " node(s) after dispose");
+  });
+
+  globalThis.gc();
+  for (let k = 0; k < 12 && tracker3.size() > 0; k++) {
+    globalThis.gc();
+    await settle();
+  }
+  const live3 = tracker3.size();
+  check(live3 === 0,
+    () => "t7: lazy-field leak witness sees " + live3 + " retained field record(s) after dispose");
+  check(tracker3.audit().length === 0,
+    () => "t7: lazy-field leak audit reported " + tracker3.audit().length + " finding(s)");
+  check(warns3.length === 0,
+    () => "t7: lazy-field leak witness raised " + warns3.length + " warning(s)");
 }

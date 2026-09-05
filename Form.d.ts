@@ -65,7 +65,7 @@ export interface Field<T = any> {
     readonly value: WritableSignal<T>;
     /** Displayed error (reveal-gated by `validateOn`), or null. */
     readonly error: ReadSignal<string | null>;
-    /** True when the value differs from its initial value. */
+    /** True when the value differs from its initial reference: `!Object.is(value(), initialRef)` against the field's captured initial reference (re-captured on `reset()`). In-place mutation of an object/array leaf does NOT flip dirty; setting a new reference does. */
     readonly dirty: ReadSignal<boolean>;
     /** Whether the field has been blurred. */
     readonly touched: ReadSignal<boolean>;
@@ -91,9 +91,9 @@ export interface FormConfig {
 }
 
 export interface Form {
-    /** Get a field's reactive state by path (dotted paths supported for nesting). */
+    /** Get a field's reactive state by path (dotted paths supported for nesting). A path not declared in `initialValues` is created lazily on first access; a lazy field allocated while a tracking context is live is created inside the form's own `registry.createRoot()`, so it survives effect re-runs (safe as of lite-signal 1.5.0). */
     field(path: string): Field;
-    /** Snapshot of all current values (untracked). */
+    /** Snapshot of all current values (untracked). Materialized by an own-key walk: baseline branches plus a per-field deep copy of each leaf, so the returned tree never aliases the form's internal state. An uncopyable runtime value (a leaf that was `set()` to a function/Map/Set/RegExp/TypedArray/class instance/symbol, or a cycle) throws a `TypeError` naming its path. */
     values(): Record<string, any>;
     /** Batch-set values by path: `setValues({ email: "x", "user.name": "y" })`. */
     setValues(patch: Record<string, any>): void;
@@ -115,6 +115,16 @@ export interface Form {
     dispose(): void;
 }
 
+/**
+ * Create a form. `initialValues` is deep-copied once at construction (the caller's
+ * object is never aliased or read again); object leaves are copied again at each
+ * seed / `reset()` / snapshot materialization.
+ * @throws {TypeError} at construction for a hostile own key (`__proto__`,
+ *   `constructor`, `prototype`) anywhere in `initialValues` / `validators` /
+ *   `fieldOpts`, a cycle in `initialValues`, or a leaf that is not a
+ *   primitive / Array / Date / plain object (function, Map, Set, RegExp,
+ *   TypedArray, class instance, symbol). The path is named in the message.
+ */
 export function createForm(config?: FormConfig): Form;
 
 /** Package version, kept in sync with package.json. */

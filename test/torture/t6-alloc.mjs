@@ -9,8 +9,10 @@
  *       maxArrayBuffersGrowth) plus the signal-pool witnesses (zero node acquires,
  *       zero pool growth), AND the primary transient witness -- new-space used
  *       bytes over 50000 GC-free ops (see harness allocTotal), budget 16384 B.
- *   (b) DOTTED MEASURED -- the same keystroke on 3-segment dotted paths; a
- *       recorded per-op baseline (NOT gated: dotted setPath is a known cost).
+ *   (b) DOTTED GATED -- the same keystroke on 3-segment dotted paths. Since S1
+ *       the dirty() path is an Object.is against a captured ref (no split, no
+ *       baseline walk), so a dotted keystroke allocates nothing either: this is a
+ *       hard transient-garbage gate with the flat window's discipline.
  *   (c) SCHEMA MEASURED -- keystroke + isValid() over a validate() schema; the
  *       schema snapshot legally allocates, so this is a recorded baseline too.
  *
@@ -22,8 +24,7 @@
  *     new-space witness (~32 B/op x 50000 ~= 1.6 MB, well over the 16384 B budget).
  */
 
-import { createForm } from "../../Form.js";
-import { BREAK, check, die, runOpsGate, allocTotal, withRegistry } from "./harness.mjs";
+import { BREAK, check, die, loadForm, runOpsGate, allocTotal, withRegistry } from "./harness.mjs";
 
 const N = 100;
 const CFG = { maxNodes: 1 << 14, maxLinks: 1 << 16, onCapacityExceeded: "throw" };
@@ -32,6 +33,7 @@ const CFG = { maxNodes: 1 << 14, maxLinks: 1 << 16, onCapacityExceeded: "throw" 
 const garr = new Array(16).fill(null);
 
 export async function run() {
+  const { createForm } = await loadForm();
   // --- window (a): FLAT GATED ------------------------------------------------
   const grow = BREAK === "grow";
   const cfgA = grow
@@ -89,7 +91,7 @@ export async function run() {
     form.dispose();
   });
 
-  // --- window (b): DOTTED MEASURED (recorded baseline) -----------------------
+  // --- window (b): DOTTED GATED ----------------------------------------------
   let dotted = 0;
   withRegistry(CFG, (reg) => {
     const initialValues = {};
@@ -100,7 +102,11 @@ export async function run() {
     const fv = f.value;
     const fe = f.error;
     const dottedHot = (i) => { fv.set(i & 1023); void fe(); };
-    dotted = allocTotal(dottedHot, 20000, 500) / 20000;
+    const total = allocTotal(dottedHot, 50000, 5000);
+    check(total <= 16384,
+      () => "t6 alloc gate rejected -- dotted keystroke allocated " + total +
+        " B of transient garbage over 50000 ops (budget 16384 B total, ~0 B/op)");
+    dotted = total / 50000;
     form.dispose();
   });
 
@@ -127,5 +133,5 @@ export async function run() {
   // Generous sanity ceilings -- these are RECORDED baselines, not budgets. The
   // real numbers land in the report; only an order-of-magnitude regression dies.
   check(!(dotted > 4096), () => "t6: dotted baseline " + dotted + " B/op exceeds the 4096 sanity ceiling");
-  check(!(schema > 65536), () => "t6: schema baseline " + schema + " B/op exceeds the 65536 sanity ceiling");
+  check(!(schema > 32768), () => "t6: schema baseline " + schema + " B/op exceeds the 32768 sanity ceiling");
 }

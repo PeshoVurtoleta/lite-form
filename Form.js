@@ -21,23 +21,42 @@
  * isValid); the SHOWN error is reveal-gated (validateOn + submit-attempted) so a
  * pristine form doesn't scream "required" everywhere.
  *
- * FIELD ALLOCATION -- eager, by design. Fields are created once, up front, from
- * initialValues + validators + fieldOpts. lite-signal 1.2.0's owner tree makes any
- * node created inside a re-running effect a CHILD of that effect (disposed on its
- * next run), and 1.2.0 has no createRoot/runWithOwner to detach ownership -- so lazy
- * per-field allocation inside a render effect would self-destruct. Forms have a
- * known, bounded field set, so eager allocation is right regardless. (This is also
- * why per-field options live in config, not in field() calls: the field already
- * exists by the time UI binds it.)
+ * FIELD ALLOCATION -- eager by default, lazy is SAFE. Fields are created up front
+ * from initialValues + validators + fieldOpts: forms have a known, bounded field
+ * set, so eager is the right default (it is also why per-field options live in
+ * config, not in field() calls -- the field already exists by the time UI binds
+ * it). Lazy field() for an undeclared path is fully supported and safe as of
+ * lite-signal 1.5.0: an undeclared field allocated under a live tracking context
+ * is created inside the form's own registry.createRoot(), so its nodes are NOT
+ * children of the re-running effect that touched it and cannot self-destruct on
+ * that effect's next run.
  *
  * Lives in the DEFAULT registry so its signals share ONE graph with the caller's
  * effects and lite-signal-dom (tracking is per-registry). Pass `registry` to
  * scope it; then bind with that registry's effect. dispose() frees every node.
  *
+ * INVARIANTS
+ *  - Unreachable baseline. initialValues is deep-copied ONCE at construction into
+ *    a private baseline; no field, values() snapshot, or reset() ever hands the
+ *    caller's object graph back out, so mutating a value() array/object cannot
+ *    reach in and change the baseline (and vice versa).
+ *  - Object.is dirty contract. dirty() is Object.is(value(), initialRef): an
+ *    IN-PLACE mutation of an object/array value never flips dirty -- setting a NEW
+ *    reference (field.set(next)) is the API. Reset re-captures initialRef so an
+ *    object leaf is clean again after reset().
+ *  - Construction-time cloneability whitelist. initialValues may hold only
+ *    primitives, plain objects, arrays, and Dates; any function, Map, Set,
+ *    RegExp, TypedArray, class instance, or symbol throws a path-named TypeError
+ *    at createForm(), never later.
+ *  - Snapshot boundary. values()/readValues() deep-copy each field value through
+ *    the same whitelist; an uncopyable RUNTIME value throws a path-named
+ *    TypeError at the snapshot boundary, not a late DataCloneError.
+ *
  * MIT (c) Zahary Shinikchiev
  */
 import {
     signal as dSignal, computed as dComputed, batch as dBatch, untrack as dUntrack, dispose as dDispose,
+    isTracking as dIsTracking, createRoot as dCreateRoot,
 } from "@zakkster/lite-signal";
 
 export const VERSION = "1.0.2";
@@ -49,7 +68,7 @@ const eq = Object.is;
 const isPlainObj = (v) => v != null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date);
 
 // Prototype-chain segments are rejected wherever a path enters the form: a
-// "__proto__" walk in setPath lands on Object.prototype (global pollution).
+// "__proto__" walk in setPathSegs lands on Object.prototype (global pollution).
 // Throw, not sanitize -- a silently dropped segment is silent data loss.
 const hostileSeg = (k) => k === "__proto__" || k === "constructor" || k === "prototype";
 const throwHostile = (k, path) => {
@@ -68,45 +87,126 @@ function guardPath(path) {
     return path;
 }
 
-function getPath(obj, path) {
-    if (obj == null) return undefined;
-    if (path.indexOf(".") < 0) {
-        if (hostileSeg(path)) throwHostile(path, path);
-        return obj[path];
+// Cloneability whitelist. Reports what to do with a value, or throws a path-named
+// TypeError for anything outside the whitelist (function, Map, Set, RegExp,
+// TypedArray, class instance, symbol). A class instance is typeof "object" and
+// not an Array/Date, so isPlainObj alone cannot spot it -- the prototype probe
+// does: only Object.prototype (or a null prototype) counts as a plain object.
+function throwUncopyable(v, path) {
+    const t = typeof v === "object"
+        ? (v && v.constructor && v.constructor.name) || "object"
+        : typeof v;
+    throw new TypeError('[lite-form] cannot deep-copy value of type "' + t + '" at "' + (path || "<root>") + '"');
+}
+
+function leafKind(v, path) {
+    if (v === null) return "prim";
+    const t = typeof v;
+    if (t === "string" || t === "number" || t === "boolean" || t === "undefined" || t === "bigint") return "prim";
+    if (t === "function" || t === "symbol") throwUncopyable(v, path);
+    if (Array.isArray(v)) return "array";
+    if (v instanceof Date) return "date";
+    const proto = Object.getPrototypeOf(v);
+    if (proto === Object.prototype || proto === null) return "object";
+    throwUncopyable(v, path);
+}
+
+// Own keys of a container plus an explicit own-"__proto__" probe: JSON.parse of
+// '{"__proto__":{}}' plants an own (data) __proto__ key that must be rejected
+// even when it forms no leaf path, so it is always surfaced to the hostile check.
+function ownKeys(src) {
+    const ks = Object.keys(src);
+    if (Object.prototype.hasOwnProperty.call(src, "__proto__") && ks.indexOf("__proto__") < 0) ks.push("__proto__");
+    return ks;
+}
+
+// Self-contained iterative deep copy (explicit stack, no recursion). Primitives
+// as-is; Date -> new Date(+v); Array/plain object -> a fresh container whose own
+// keys are copied (arrays keep their length, so sparse holes survive). On EVERY container: a hostile own key (__proto__/constructor/
+// prototype) throws (rejecting it even inside array elements -- copying such a
+// key data-safely is a pollution trap); a container revisited on the in-progress
+// stack PATH is a cycle and throws (only the ancestor chain is tracked, so a
+// shared non-cyclic subtree is legal and gets copied independently); any other
+// type throws a path-named TypeError. Used by the construction walk, by makeField
+// seeding, by reset, and by snapshot materialization.
+function copyLeaf(root, rootPath) {
+    const rp = rootPath === undefined ? "" : rootPath;
+    const rk = leafKind(root, rp);
+    if (rk === "prim") return root;
+    if (rk === "date") return new Date(+root);
+    const result = rk === "array" ? new Array(root.length) : {};
+    const onPath = new Set();
+    onPath.add(root);
+    const stack = [{src: root, dst: result, keys: ownKeys(root), i: 0, path: rp}];
+    while (stack.length > 0) {
+        const fr = stack[stack.length - 1];
+        if (fr.i >= fr.keys.length) {
+            onPath.delete(fr.src);
+            stack.pop();
+            continue;
+        }
+        const k = fr.keys[fr.i++];
+        const p = fr.path;
+        if (hostileSeg(k)) throwHostile(k, p ? p + "." + k : k);
+        const cp = p ? (p + "." + k) : k;
+        const cv = fr.src[k];
+        const ck = leafKind(cv, cp);
+        if (ck === "prim") { fr.dst[k] = cv; continue; }
+        if (ck === "date") { fr.dst[k] = new Date(+cv); continue; }
+        if (onPath.has(cv)) throw new TypeError('[lite-form] cycle at "' + cp + '"');
+        const cd = ck === "array" ? new Array(cv.length) : {};
+        fr.dst[k] = cd;
+        onPath.add(cv);
+        stack.push({src: cv, dst: cd, keys: ownKeys(cv), i: 0, path: cp});
     }
-    let o = obj;
-    const keys = path.split(".");
-    for (let i = 0; i < keys.length && o != null; i++) {
-        if (hostileSeg(keys[i])) throwHostile(keys[i], path);
-        o = o[keys[i]];
-    }
+    return result;
+}
+
+// The construction walk: deep-copy initialValues into the private baseline,
+// rejecting hostile own keys, cycles, and any non-whitelisted type, with a
+// path-tracked message. Thin over copyLeaf so construction and every later copy
+// share one code path (and one reproto-control anchor).
+function cloneConfig(src) {
+    return copyLeaf(src);
+}
+
+// Read a leaf from the baseline by cached segments -- flat (segs null) is a
+// direct property read; dotted walks the pre-split segs, no split per call.
+// guardPath already validated the segments, so no hostile check here.
+function readBase(base, path, segs) {
+    if (base == null) return undefined;
+    if (segs === null) return base[path];
+    let o = base;
+    for (let i = 0; i < segs.length && o != null; i++) o = o[segs[i]];
     return o;
 }
 
-function setPath(obj, path, val) {
-    if (path.indexOf(".") < 0) {
+// segs-aware twin of the old string setPath: same array/{} materialization logic
+// (choose an array when the next segment is a numeric index), but walking the
+// pre-split segments so a snapshot leaf costs no split.
+function setPathSegs(obj, path, segs, val) {
+    if (segs === null) {
         if (hostileSeg(path)) throwHostile(path, path);
         obj[path] = val;
         return;
     }
-    const keys = path.split(".");
     let o = obj;
-    for (let i = 0; i < keys.length - 1; i++) {
-        const k = keys[i];
+    for (let i = 0; i < segs.length - 1; i++) {
+        const k = segs[i];
         if (hostileSeg(k)) throwHostile(k, path);
         // Keep existing objects AND arrays while descending; only materialize a missing
         // container, choosing an array when the next key is a numeric index.
         if (!(isPlainObj(o[k]) || Array.isArray(o[k]))) {
-            o[k] = /^\d+$/.test(keys[i + 1]) ? [] : {};
+            o[k] = /^\d+$/.test(segs[i + 1]) ? [] : {};
         }
         o = o[k];
     }
-    const last = keys[keys.length - 1];
+    const last = segs[segs.length - 1];
     if (hostileSeg(last)) throwHostile(last, path);
     o[last] = val;
 }
 
-function leafPaths(obj, prefix, out) {                    // flatten initialValues to dotted leaf paths
+function leafPaths(obj, prefix, out) {                    // flatten baseline to dotted leaf paths
     for (const k in obj) {
         const p = prefix ? prefix + "." + k : k;
         if (isPlainObj(obj[k])) leafPaths(obj[k], p, out);
@@ -131,6 +231,8 @@ function evValue(ev) {                                    // extract a value fro
  *   onSubmit?: (values:object) => void | Promise<void>,
  *   registry?: object,
  * }} [config]
+ * @throws {TypeError} if initialValues carries a hostile own key, a cycle, or a
+ *   value outside the cloneability whitelist.
  */
 export function createForm(config = {}) {
     const {
@@ -160,6 +262,10 @@ export function createForm(config = {}) {
         return h;
     };
 
+    // Private baseline: initialValues deep-copied ONCE, whitelist-validated, so it
+    // is never reachable from any value the caller can see or mutate.
+    const baseline = isPlainObj(initialValues) ? cloneConfig(initialValues) : {};
+
     const fields = new Map();                             // path -> field record
     const submitAttempted = sig(false);
     const submitting = sig(false);
@@ -170,12 +276,20 @@ export function createForm(config = {}) {
     // sibling changes) without building a snapshot object.
     const ctx = {get: (path) => getField(path).value()};
 
+    // Deep-copy the baseline branches, then overwrite each field's leaf with a
+    // deep copy of read(f). copyLeaf throws a path-named TypeError on an
+    // uncopyable RUNTIME value (replacing the old late DataCloneError); undefined
+    // lazy-field values still appear in the output.
+    function materialize(read) {
+        const out = copyLeaf(baseline);
+        for (const [path, f] of fields) setPathSegs(out, path, f.segs, copyLeaf(read(f), path));
+        return out;
+    }
+
     // TRACKED values builder for the schema. Unlike values() (peek-based snapshot for
     // submit), this reads each field via value() so formErrors depends on every field.
     function readValues() {
-        const out = isPlainObj(initialValues) ? structuredClone(initialValues) : {};
-        for (const [path, f] of fields) setPath(out, path, f.value());
-        return out;
+        return materialize((f) => f.value());
     }
 
     // Hoisted schema: runs validate() exactly ONCE per values change, not once per field.
@@ -183,15 +297,19 @@ export function createForm(config = {}) {
 
     function makeField(path) {
         guardPath(path);                                  // sole fields.set site: no hostile path is ever cached
-        const initial = getPath(initialValues, path);
-        const value = sig(initial);
+        const segs = path.indexOf(".") < 0 ? null : path.split(".");
+        const seeded = copyLeaf(readBase(baseline, path, segs));
+        let initialRef = seeded;
+        const value = sig(seeded);
         const touched = sig(false);
         const validator = validators[path];
         const o = fieldOpts[path] || EMPTY;
 
         // Per-field validity: depends ONLY on this field's value (lean keystroke path).
         const rawError = validator ? cmp(() => normErr(validator(value(), ctx))) : NULL;
-        const dirty = cmp(() => !eq(value(), getPath(initialValues, path)));
+        // dirty is one closure read + one Object.is against the captured initialRef
+        // -- no path split, no baseline walk on the keystroke path.
+        const dirty = cmp(() => !eq(value(), initialRef));
         // Displayed error: reveal-gated; per-field error first, then schema fallback.
         // Reading formErrors() here is an O(1) lookup whose result is Object.is-cutoff,
         // so a field only re-renders when ITS message changes.
@@ -208,15 +326,20 @@ export function createForm(config = {}) {
 
         const f = {
             path,
+            segs,                                         // cached path segments for the snapshot walk
             value,                                        // value() reads+tracks; value.peek() untracked
             error,                                        // error() = displayed error (reveal-gated)
-            dirty,                                        // dirty() = value !== initial
+            dirty,                                        // dirty() = value !== initialRef
             touched,                                      // touched() reads
             rawError,                                     // internal: per-field validity for isValid
             set: (v) => value.set(v),
             blur: () => touched.set(true),
             reset: () => {
-                value.set(getPath(initialValues, path));
+                // Re-capture initialRef from a FRESH copy so dirty() reads false again
+                // after reset even for an object/array leaf.
+                const fresh = copyLeaf(readBase(baseline, path, segs));
+                initialRef = fresh;
+                value.set(fresh);
                 touched.set(false);
             },
             props: () => ({
@@ -230,14 +353,26 @@ export function createForm(config = {}) {
     }
 
     function getField(path) {
-        return fields.get(path) || makeField(path);
+        const f = fields.get(path);
+        if (f !== undefined) return f;                    // falsy-record fail-closed: only a real record hits
+        return lazyField(path);
+    }
+
+    // Cold path for an undeclared field. Under a live tracking context the new
+    // nodes would otherwise be children of the re-running effect that touched the
+    // field; createRoot detaches ownership so they belong to the form, not the
+    // effect. Registry-scoped forms use the form's OWN registry surface.
+    function lazyField(path) {
+        const tracking = registry ? registry.isTracking() : dIsTracking();
+        if (!tracking) return makeField(path);
+        return registry ? registry.createRoot(() => makeField(path)) : dCreateRoot(() => makeField(path));
     }
 
     // Eager allocation: every declared field, up front, outside any render effect.
     {
         const declared = new Set(Object.keys(validators));
         Object.keys(fieldOpts).forEach((p) => declared.add(p));
-        leafPaths(initialValues, "", []).forEach((p) => declared.add(p));
+        leafPaths(baseline, "", []).forEach((p) => declared.add(p));
         declared.forEach(makeField);
     }
 
@@ -260,9 +395,7 @@ export function createForm(config = {}) {
     });
 
     function values() {                                   // untracked snapshot (for submit / external reads)
-        const out = isPlainObj(initialValues) ? structuredClone(initialValues) : {};
-        for (const [path, f] of fields) setPath(out, path, f.value.peek());
-        return out;
+        return materialize((f) => f.value.peek());
     }
 
     function setValues(patch) {

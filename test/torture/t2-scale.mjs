@@ -6,8 +6,7 @@
  * returns the registry to its pre-createForm baseline.
  */
 
-import { createForm } from "../../Form.js";
-import { check, withRegistry } from "./harness.mjs";
+import { check, loadForm, withRegistry } from "./harness.mjs";
 
 const FLAT = 1000;
 const DOTTED = 200;
@@ -17,6 +16,7 @@ const CFG = { maxNodes: 1 << 15, maxLinks: 1 << 17, onCapacityExceeded: "throw" 
 let counters = null;
 
 export async function run() {
+  const { createForm } = await loadForm();
   withRegistry(CFG, (reg) => {
     const base = reg.stats().activeNodes;
 

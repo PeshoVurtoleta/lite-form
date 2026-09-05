@@ -194,7 +194,7 @@ runtimes (two createForm calls and your own nav state, per the README).
 ---
 package: "@zakkster/lite-form"
 version_target: 1.0.1
-status: planned
+status: shipped (2026-09-05 -- gate+hygiene shipped as v1.0.2; the LF-01 subset went early as the v1.0.1 hotfix)
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
