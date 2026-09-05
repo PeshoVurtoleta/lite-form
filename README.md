@@ -15,7 +15,7 @@
 > runs exactly one validator** -- every other field is a cached read.
 
 ```bash
-npm i @zakkster/lite-form @zakkster/lite-signal
+npm i @zakkster/lite-form @zakkster/lite-signal @zakkster/lite-project
 ```
 
 ```js
@@ -702,10 +702,11 @@ ESM only. No CJS build. If you need CJS, bundle through esbuild/rollup.
 }
 ```
 
-`@zakkster/lite-signal` is always required. `@zakkster/lite-project` (~7 KB
-minified, 958 lines) is the projection engine the value core rides; it is only
-loaded when you opt into engine mode via `createForm({ source })`. That's it for
-the default mode. lite-form is ~621 lines on top of lite-signal's primitives.
+Both are always required. `@zakkster/lite-project` (~7 KB minified, 958 lines)
+is the projection engine the value core rides in BOTH modes -- the import is
+static, so it must be installed even if you never pass `source` (default mode
+projects the detached baseline through it; engine mode projects your live
+source). lite-form is ~621 lines on top of the two.
 
 ---
 
@@ -789,7 +790,7 @@ MIT (c) Zahary Shinikchiev
 #### The @zakkster stack
 
 - [@zakkster/lite-signal](https://www.npmjs.com/package/@zakkster/lite-signal) -- the reactive primitives this all builds on
-- [@zakkster/lite-project](https://www.npmjs.com/package/@zakkster/lite-project) -- the projection engine the value core rides in engine mode
+- [@zakkster/lite-project](https://www.npmjs.com/package/@zakkster/lite-project) -- the projection engine the value core rides (both modes)
 - [@zakkster/lite-element](https://www.npmjs.com/package/@zakkster/lite-element) -- Custom Elements with state that survives reparents
 - [@zakkster/lite-time](https://www.npmjs.com/package/@zakkster/lite-time) -- drift-corrected wall-clock cadence
 - **@zakkster/lite-form** -- *this package*

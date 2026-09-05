@@ -7,13 +7,14 @@ schema (Zod/Yup-shaped) is hoisted into a single computed that runs once per
 keystroke, not once per field.
 
 ESM-only. Node >= 18. Single file `Form.js`, 621 lines, ~6.4 KB minified.
-Peer dependencies: `@zakkster/lite-signal ^1.5.0` (always) and
-`@zakkster/lite-project ^1.4.1` (the projection engine the value core rides;
-loaded only in engine mode via `createForm({ source })`).
+Peer dependencies: `@zakkster/lite-signal ^1.5.0` and
+`@zakkster/lite-project ^1.4.1` (the projection engine the value core rides in
+BOTH modes -- the import is static, so it must be installed even if you never
+pass `source`).
 
 ## Install
 
-    npm i @zakkster/lite-form @zakkster/lite-signal
+    npm i @zakkster/lite-form @zakkster/lite-signal @zakkster/lite-project
 
 ## Imports
 

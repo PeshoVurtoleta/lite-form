@@ -331,7 +331,7 @@ DONE WHEN
 ---
 package: "@zakkster/lite-form"
 version_target: 1.2.0
-status: planned
+status: shipped (2026-09-05 -- engine swap shipped as v1.2.0; API frozen, 53 prior tests green unmodified, suite 77; schema keystroke clone retired 20,990 -> 113.44 B/op, dotted still ~0.1 B/op gated; commit/toPatch/reinitialize + source mode additive; t6 falsified lite-project 1.4.0 (~40 B/op hot-path context alloc, invisible to its own gate) -> fixed upstream as 1.4.1, peer floor ^1.4.1 -- see decisions/0002-engine.md)
 findings: [LF-06, LF-10 partial]
 depends_on: [S1]
 ---
