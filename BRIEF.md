@@ -1,218 +1,243 @@
 ---
 package: "@zakkster/lite-form"
-version_target: 1.2.0
-status: in-progress
+version_target: 1.3.0
+status: ready (authored 2026-09-06; pipeline not started)
 gc_maxMajor: 0
 gc_maxPauseMs: 4
-alloc_budget: "flat AND dotted keystroke gated <= 16384 B total per 50k ops (must not regress); schema-mode keystroke must FALL from the 1.1.0 baseline ~20,990 B/op toward the validate() call's own cost, new baseline recorded"
+alloc_budget: "flat/dotted/schema t6 gates AND recorded baselines byte-unchanged for a form with no async validators (the seam is off-cost unused); async-validated keystroke cost measured + recorded (Promise machinery is inherent -- the debounce recipe is the documented mitigation, never a gate waiver for the sync path); merge-reinitialize is a COLD path (copies + policy calls legal), bounded by t7 soak leak-flatness"
 leak_cycles: 4096
-peers: ["@zakkster/lite-signal ^1.5.0", "@zakkster/lite-project ^1.4.1 (NEW)"]
-dev: ["@zakkster/lite-signal ^1.5.0", "@zakkster/lite-project ^1.4.1", "@zakkster/lite-store ^1.3.0 (NEW, test-only)", "@zakkster/lite-gc-profiler ^1.16.0", "@zakkster/lite-leak ^1.10.0"]
-findings: [LF-06, LF-10 partial]
-depends_on: ["S1 (shipped 2026-09-05 as v1.1.0, commit c4fdb00)"]
+peers: ["@zakkster/lite-signal ^1.5.0", "@zakkster/lite-project ^1.4.1"]
+dev: ["@zakkster/lite-signal ^1.5.0", "@zakkster/lite-project ^1.4.1", "@zakkster/lite-store ^1.4.0 (floor RAISED from ^1.3.0 -- 1.4.0 on npm 2026-09-05)", "@zakkster/lite-debounce ^1.1.0 (NEW, recipe test only)", "@zakkster/lite-gc-profiler ^1.16.0", "@zakkster/lite-leak ^1.10.0"]
+findings: [LF-09, LF-10]
+depends_on: ["S2 (shipped 2026-09-05 as v1.2.0, engine commit ff608b8, bump f2dffc0)"]
 ---
 
-# lite-form -- the state engine (S2)
+# lite-form -- forms live between two servers (S3)
 
-Session S2 of ROADMAP.md (section "S2 -- lite-form v1.2.0"). Minor bump
-1.1.0 -> 1.2.0: the hand-rolled baseline+edits+dirty+reset core is rebased on a
-@zakkster/lite-project projection over the S1 detached baseline. The public API
-is FROZEN and gains only additive surface: commit(), toPatch(),
-reinitialize(next), and the opt-in `source` config. Validation, reveal gating,
-and submit stay lite-form's own layer, untouched.
+Session S3 of ROADMAP.md (section "S3 -- lite-form v1.3.0"). Minor bump
+1.2.0 -> 1.3.0. The three real-world flows the README only gestures at, all
+additive on the S2 engine seam: (a) fresh server data arrives WHILE the user
+edits -- reinitialize(next, policy) keeps the user's dirty overlays unless the
+server echoed them; (b) dirty-only submit -- post toPatch() instead of
+values(); (c) async validation -- a per-field async seam with isValidating,
+last-write-wins ordering, debounce delegated to lite-debounce, and the
+server-error signal pattern promoted from README prose to a tested recipe.
+Validation algebra, reveal gating, and the engine core are untouched.
 
 ## ALREADY DONE (do not redo, do not re-derive)
 
-- S1 shipped: baseline unreachable (copyLeaf iterative walk, whitelist
-  primitives/Array/Date/plain-object, cycles TypeError, hostile own keys
-  TypeError), snapshot own-walk (no structuredClone anywhere), dirty contract
-  `!Object.is(value(), initialRef)`, lazy fields via registry.createRoot,
-  peer floor lite-signal ^1.5.0. 53 tests. Form.js 461 lines.
-- Preflight verified 2026-09-05 (do not re-verify): lite-project 1.4.0 local
-  AND on npm; Project.js 943 lines, 7,115 B minified (record in ADR as the
-  peer bundle cost). lite-store local 1.4.0, npm latest 1.3.0 -> devDep floor
-  ^1.3.0 (NOT ^1.4.0; must stay npm-installable). lite-project peers on
-  lite-signal ^1.5.0 (same floor as ours -- no conflict).
-- Gate numbers on this box (Node 26): flat keystroke 0 B/op, dotted 0.057 B/op
-  (GATED <= 16384 B / 50k), schema ~20,990 B/op (recorded baseline, sanity
-  ceiling 32768 B/op).
+- S2 shipped: value core on the lite-project projection (fromAccessors over
+  per-field seed copies + baselineRev; source mode via fromProxy);
+  commit(path?) fail-closed (unregistered path TypeError), toPatch(),
+  reinitialize(next) 1-arg (atomic validate+copy, drops every edit), scratch
+  tree for schema validate() (form-owned/transient contract). Suite 77.
+  Form.js 621 lines / 6,473 B min. Gate numbers on this box (Node 26): flat
+  ~0 B/op, dotted 0.06-0.13 B/op run noise under the <= 16384 B / 50k hard
+  gate, schema 113.440 B/op recorded (~113 is the fixed window floor; the
+  A3 attribution probe measured materialization itself FREE, |delta| 0.32).
+- Preflight VERIFIED 2026-09-06 (do not re-verify, DO read current llms.txt
+  of each package -- ROADMAP §S3 predates the S2 engine):
+  - lite-project 1.4.1 npm+local. reconcileAll(policy?), confirmOnEcho
+    (Object.is), makeReconciler(view, policy?) all present. Its llms RECORDS
+    the trap this session inherits: reference-equality echo means an OBJECT
+    draft can never auto-confirm across references -- and lite-form
+    deep-copies every server payload at the boundary, so for us object
+    leaves NEVER Object.is-echo. See PINNED 3.
+  - lite-debounce 1.1.0 local = npm. API: debounce(sourceFn, ms = 0,
+    { maxWait = 0 }) trailing; debounceLeading(sourceFn, ms = 0,
+    { trailing = false }). Zero-GC on lite-signal.
+  - lite-store 1.4.0 on npm (2026-09-05T22:18Z) + local; its 1.4.0 ported
+    the same new-space transient witness (LS-08 closed) and raised its
+    lite-signal floor to ^1.5.0 (same as ours -- no conflict). The S2
+    brief's "transaction unshipped, LS-01 live" caveats are HISTORICAL:
+    transaction shipped in its 1.3.0, deep walks iterative since 1.2.2.
+    devDep floor moves ^1.3.0 -> ^1.4.0.
+  - lite-resource exists locally only as the misspelled `LiteResourse`
+    1.0.0. NOT used in S3 (PINNED 7 territory: the README's "use
+    lite-resource inside an effect" aside is superseded by this session's
+    seam and gets rewritten).
 
-## PINNED DECISIONS (law for this session; ADR records them, planner does not reopen)
+## PINNED DECISIONS (law for this session; ADR 0003 records them, planner does not reopen)
 
-1. lite-project is a PEER + devDep, floor ^1.4.1 (the floor moved mid-session:
-   the t6 transient witness falsified 1.4.0 -- its slotFor/peek allocated a
-   ~40 B/op closure context on get/peek/set, invisible to its own pool-census
-   gate; fixed upstream as 1.4.1 with the witness ported, so 1.4.0 would fail
-   lite-form's own gate on a fresh install). NOT a hard dep -- suite
-   convention, same rationale as decisions/0001's peer-flip refutation.
-   lite-store enters as devDependency ^1.3.0 ONLY (qa round-trip); it is NOT
-   the core engine (its transaction surface is unshipped, LS-01 live).
-2. Projection binding: `createProjector(formRegistry).project(...)` -- the
-   projection's nodes live in the FORM's registry, never the default one,
-   unless the form itself is on the default registry. Engine handles per-key
-   createRoot detachment internally (lite-project gotcha #1); lite-form does
-   NOT wrap slot creation in its own createRoot.
-3. Overlay keys ARE dotted field paths, verbatim (the stable contract, in the
-   ADR). One overlay key per field path. Keys are warmed at makeField (first
-   read creates the slot -- construction is the warm path, keystroke never
-   allocates a slot for a declared or already-touched field).
-4. The S1 unreachability law survives the engine: `source.get(path)` returns
-   the field's captured seed copy (initialRef), NEVER a reference into the
-   baseline tree. `source.set(path, v)` (reached only via engine commit)
-   deep-copies v into the baseline (copyLeaf) and re-captures initialRef as a
-   fresh copy. The caller can never reach the baseline through any read, and
-   commit cannot alias caller-owned objects into it. All copies sit on cold
-   paths (commit/reset/reinitialize/construction), never the keystroke.
-5. Reactivity of the plain-tree source: baseline reads track nothing by
-   themselves, so `source.get` reads (and thereby tracks) a form-level
-   `baselineRev` signal bumped by reinitialize()/commit()/reset(). Without
-   this, a pristine (never-overlaid) field's projected computed would never
-   re-run on reinitialize. This is the ONLY new signal on the read path; it
-   is read, not written, on keystrokes.
-6. Dirty contract UNCHANGED and unified with the engine: `field.set(v)` calls
-   `handle.clear(path)` when `Object.is(v, initialRef)`, else
-   `handle.set(path, v)`. Overlay presence then coincides with dirty for the
-   default (detached-baseline) form: per-field `dirty` stays the S1 computed
-   `!Object.is(value(), initialRef)` byte-for-byte, and `form.isDirty`
-   becomes `cmp(() => handle.dirtyCount() > 0)` (tracked). The one extra
-   Object.is on the keystroke is the same compare the dirty computed already
-   performs. No TTL opts are EVER passed to set (state in ADR: TTL is
-   optimistic-UI machinery; a form draft has no expiry).
-7. t9 patch anchors WILL move (makeField seed line changes shape). The coder
-   updates the anchor strings in t9-controls.mjs to the new verbatim lines,
-   keeps the occurs-exactly-once assertion (`source.split(anchor).length ===
-   2`, die "patch anchor not found -- Form.js drifted"), and both controls
-   (realias/reproto) must still die at t1 with their existing markers
-   ("t1 LF-02" / "t1 LF-03"). The construction walk (copyLeaf, hostileSeg,
-   whitelist) itself is NOT to be modified by the swap.
+1. reinitialize(next) 1-ARG CONTRACT IS FROZEN: atomic validate+copy BEFORE
+   any state change, drops every edit, absent paths re-seed undefined,
+   clears touched + submit state. The policy variant is ADDITIVE; all 77
+   existing tests stay green UNMODIFIED.
+2. THE MERGE TABLE (default/detached-baseline mode; the whole merge runs in
+   ONE registry batch; next is validated + deep-copied atomically first --
+   a TypeError mutates nothing). For each registered field path p, with
+   n = the copied next leaf at p (undefined when absent) and d = the
+   field's current draft value:
+   - pristine field            -> adopt n (baseline reseeded, initialRef
+                                  re-captured; field stays pristine at n)
+   - dirty field, policy(n, d) -> ECHO: clear the overlay AND adopt n;
+     returns true                 field is PRISTINE at n (the server
+                                  confirmed the edit)
+   - dirty field, policy(n, d) -> CONFLICT: KEEP the overlay (the user's
+     returns false                draft stays visible, masking n) but
+                                  reseed the baseline to n underneath --
+                                  dirty stays true, reset() now targets n,
+                                  toPatch() reports from = n
+   - path absent from next     -> same rules with n = undefined (a dirty
+                                  undefined draft Object.is-echoes and goes
+                                  pristine-undefined; falls out of the
+                                  table, no special case)
+3. Default policy = Object.is(n, d) -- confirmOnEcho semantics. A policy is
+   caller-supplied `(nextValue, draftValue) => boolean`; lite-form ships NO
+   structural deep-equal (mirror-oracle cost + feature creep). DOCUMENT the
+   consequence loudly: deep-copied payloads mean object-leaf edits are
+   always CONFLICTS under the default policy; a caller-supplied structural
+   policy is the escape hatch -- the same recorded contract as
+   lite-project's own confirmOnEcho limitation.
+4. The async seam is OFF-COST when unused: a form with no async validators
+   allocates NO per-field async machinery, adds NO signal reads to
+   keystroke/submit, and reproduces 1.2.0's t6 numbers byte-for-byte.
+   Fields WITHOUT an async validator pay nothing even on a form that has
+   async fields elsewhere.
+5. Ordering law: one monotonically increasing sequence per async field; a
+   resolution (or rejection) carrying a stale seq is DROPPED WHOLE -- no
+   signal write, no error surface, no trace. isValidating is true exactly
+   while the LATEST seq is unsettled. dispose() mid-flight is safe: a
+   post-dispose settlement is a complete no-op (no throw, no write).
+6. Fail-closed submit law: onSubmit NEVER runs on stale or unsettled
+   validity -- a pending async verdict cannot race a submit into a false
+   positive. The mechanism (refuse-while-pending vs await-settle) is D6;
+   the law is not negotiable.
+7. NO timers inside Form.js: no setTimeout/interval/microtask scheduling
+   machinery for debounce purposes (the S2 TTL refusal's sibling). Debounce
+   belongs to the caller via the lite-debounce recipe -- devDep ^1.1.0,
+   6th symlink, recipe TESTED in the fast suite. lite-form only sequences
+   caller promises with plain .then callbacks.
+8. t9 identifier discipline continues (re-capture sites use fresh/landed/
+   reseed naming, never `const seeded =`); any moved anchor is updated
+   verbatim with the occurs-exactly-once assertion kept, and the
+   realias/reproto controls must still die at t1 with their markers.
 
 ## TASKS (planner refines into atomic ordered tasks with file targets)
 
-1. decisions/0002-engine.md FIRST: default = projection over
-   fromAccessors(baselineGet, baselineSet); recorded alternative = keep S1
-   internals, hand-write commit/toPatch (choose it only if a gate falsifies
-   the projection). Record: peer-vs-hard-dep, bundle cost (7,115 B min),
-   overlay-key<->field-path mapping, TTL refusal, the baselineRev mechanism,
-   and the source-mode dirty decision (see DECISION POINTS).
-2. Swap the value core: field value reads ride the projected computed;
-   field.value stays the public WritableSignal-shaped surface (facade over
-   handle get/set if needed -- planner pins the exact shape against the
-   current Form.d.ts types). set/reset/setValues/values/readValues rebased.
-   reset() = revert() + re-seed semantics identical to S1 (initialRef
-   re-captured from baseline copies).
-3. Additive API: `commit(path?)` (fold dirty values into the baseline via the
-   engine; all fields pristine after; reset() now targets the committed
-   state), `toPatch()` -> [{path, from, to}] for exactly the dirty paths
-   (engine toPatch; from = baseline value, to = current), `reinitialize(next)`
-   (next validated + deep-copied exactly like createForm initialValues, all
-   overlays reverted, baselineRev bumped, initialRefs re-captured; lazy
-   fields whose path is absent from next re-seed undefined). Declare all
-   three in Form.d.ts + document.
-4. Schema mode stops cloning per keystroke: the INTERNAL materialization for
-   validate() reuses a per-form scratch tree (leaves written in place;
-   object leaves passed by reference), rebuilt only on reinitialize. Document
-   scratch ownership: the object handed to schema validate is form-owned and
-   transient; retaining or mutating it is undefined behaviour. PUBLIC
-   values()/readValues() keep the S1 copying + TypeError contract unchanged.
-   Record the new schema B/op number; it becomes the new recorded baseline.
-5. Opt-in `source` config: createForm({source: store}) rides
-   projectStore(store) instead of the detached-baseline projection.
-   Minimal honest contract only (see DECISION POINTS D3) -- this mode's
-   semantics are documented as engine semantics, additive, and MUST NOT
-   change any default-mode test.
-6. Torture: t6 gains the schema-mode measurement against the new baseline
-   (keystroke gates unchanged and must not regress); t5 fuzz extends to
-   commit/toPatch/reinitialize vs the mirror (mirror folds overlay into
-   baseline on commit; toPatch compared against the mirror's dirty-path set);
-   t7 soak covers commit/revert churn (pooled-node reuse: warmed keys, flat
-   poolGrowths); t9 anchors updated per PINNED 7. lite-store round-trip
-   proven in the fast suite or t5 (reconcile -> overlay -> submit).
-7. Wiring: package.json peers/devDeps per frontmatter; 4th + 5th symlinks
-   (lite-project -> ../../../LiteProject, lite-store -> ../../../LiteStore);
-   README wiring section updated (the fresh-clone drill must pass on the
-   documented symlinks alone); FAST_SUITE_COUNT + README + llms.txt test
-   counts move together (t9 preflight exits 2 on drift). CHANGELOG gains an
-   `## Unreleased` section (release flips it to 1.2.0). VERSION const stays
-   1.1.0 until /release.
-8. Docs: README (positioning + deep-dive + API reference + design notes gain
-   the engine story; composability example with commit/toPatch), llms.txt
-   (new surface + invariants), Form.d.ts additive types. ASCII-only. Do NOT
-   touch the Node-22 bench records (deferred doc pass, not S2).
+1. decisions/0003-server-data.md FIRST: the merge table + policy contract
+   (PINNED 2/3), the ordering law (PINNED 5), the submit gating choice (D6
+   under PINNED 6), isValidating surface (D3), patch-submit shape (D2),
+   touched/submit-state fate per merge row (D1), source-mode reconcile
+   verdict (D4), server-error story verdict (D5), the no-timers rule
+   (PINNED 7), and the lite-store floor move.
+2. Merge-reinitialize: implement PINNED 2 exactly (atomic pre-validate ->
+   one batch -> per-field table application; policy called only for dirty
+   fields; engine overlays cleared/kept via handle.clear / left in place;
+   baselineRev bumped once). Declare in Form.d.ts + document.
+3. Async validation seam: config surface (planner pins the name, e.g.
+   validatorsAsync: Record<path, (value, ctx) => Promise<msg|null>>);
+   per-async-field seq guard + result lane merged into rawError semantics;
+   form.isValidating (+ per-field per D3); D6 isValid semantics; dispose
+   safety per PINNED 5. Hint, not law: mirror the rawError shape -- an
+   async result signal written only by latest-seq settlements; a field is
+   invalid when EITHER lane says so.
+4. Dirty-only submit per D2: posts toPatch() to the caller's handler;
+   submit lifecycle (isSubmitting/submitError/submitAttempted) unchanged.
+5. Server-error story per D5: tested recipe (lean) or a tiny helper --
+   either way a fast-suite test proves the 409-flow end to end.
+6. Source mode: verify and PRESERVE 1.2.0's source-mode reinitialize
+   behavior unchanged (read the code + test/07 first); implement D4's
+   verdict (form.reconcile(policy?) over engine reconcileAll, or an ADR
+   line deferring it). Merge-reinitialize itself is DEFAULT-MODE ONLY.
+7. Torture: t5 fuzz gains seeded interleavings of set/blur/reset/commit/
+   setValues/reinitialize(next)/reinitialize(next, policy) vs the mirror
+   (mirror implements the PINNED 2 table + D1 verdicts); an async-lane
+   fuzz with a deterministic deferred scheduler (seeded resolution-order
+   shuffles, NO wall clock); t6 asserts the no-async numbers byte-stable
+   and records the async-validated keystroke; t7 soaks async churn
+   (create -> N in-flight validations -> out-of-order settle -> dispose)
+   and merge churn, both leak-flat over 4096; t9 gains a stale-seq control
+   (a patched copy that drops the seq guard must die in the ordering test)
+   plus anchor upkeep per PINNED 8.
+8. Wiring + docs: devDeps per frontmatter (lite-store ^1.4.0,
+   lite-debounce ^1.1.0 + 6th symlink ../../../LiteDebounce); README/llms
+   gain the three flows (merge semantics table, async ordering contract,
+   patch submit, debounce recipe, server-error recipe) and the stale
+   lite-resource aside is rewritten; FAST_SUITE_COUNT + README + llms
+   counts move together; CHANGELOG `## Unreleased`; VERSION stays 1.2.0
+   until /release. Do NOT touch the Node-22 bench records (still the
+   deferred doc pass).
 
-## DECISION POINTS FOR PLANNER (pin each in the spec; ADR records D1/D3)
+## DECISION POINTS FOR PLANNER (pin each in the spec; ADR records all)
 
-D1. field.value writable facade: today field.value IS the writable signal.
-    Under the engine the projected computed is read-only and writes go
-    through handle.set/clear. Pin the exact object shape that keeps
-    Form.d.ts's WritableSignal-typed surface true (e.g. a tiny facade
-    {get/peek/set} delegating to the handle) AND keeps props()/set()/blur()
-    allocation-free per keystroke. If lite-signal's WritableSignal is a
-    nominal class the facade cannot satisfy, pin the d.ts change (additive
-    union, not a break) and say so in the CHANGELOG.
-D2. commit(): engine commit() writes ALL overlays including
-    Object.is-unchanged ones -- but PINNED 6's clear-on-initial means
-    overlaid === dirty, so plain commit() suffices; assert in a test that a
-    set-back-to-initial field is not visited by toPatch and not written by
-    commit. commit(path?) one-key form uses engine commit(key).
-D3. Source-mode (projectStore) dirty semantics -- THE hairy one. The store is
-    live; an authoritative store write under an un-overlaid field changes
-    value() and would flip the S1 Object.is-vs-initialRef dirty without any
-    user edit. Pin ONE of: (a) source-mode dirty = overlay presence
-    (document as engine semantics for this mode; field.dirty rides
-    !Object.is(value(), source-current) via a re-captured ref on
-    authoritative change), or (b) a makeReconciler-based re-capture effect.
-    Choose the smallest contract that keeps the default mode untouched and
-    the assertion honest; record in the ADR. If neither survives contact,
-    the fallback is source-mode ships WITHOUT dirty guarantees (documented
-    "dirty is engine overlay presence in source mode"), never a silent
-    half-contract.
-D4. Scratch-tree rebuild triggers: reinitialize obviously; does a lazy field
-    materializing a NEW path require a scratch grow? Pin when the scratch is
-    (re)built and assert schema keystrokes allocate ~validate()-only after
-    warmup.
-D5. prune(): NOT exposed on the form in S2 unless it falls out free --
-    fields map already retains per-field objects; dispose() is the teardown.
-    If exposed, it needs a test; leaning NO (record one line in ADR).
+D1. Touched/submitAttempted/submitError fate per merge row. Lean: CONFLICT
+    rows keep touched (the user is mid-edit on that field); ECHO/adopt rows
+    clear touched; submit state untouched by the merge (a background
+    refresh must not un-reveal errors mid-flow). Whatever is pinned, the
+    mirror implements it and a truth-table test proves it.
+D2. Patch-submit shape: submit(ev?, opts?) vs a config flag vs a separate
+    onSubmitPatch handler. Constraints: ev.preventDefault compat preserved,
+    existing onSubmit signature untouched, additive d.ts, isSubmitting
+    lifecycle identical in both shapes.
+D3. isValidating surface: form-level signal is required; per-field
+    field.isValidating only if it allocates solely for async-configured
+    fields (PINNED 4). Also pin the trigger topology so the lite-debounce
+    recipe actually composes: the caller must be able to debounce the
+    async lane without lite-form owning a timer (e.g. the async validator
+    reads a debounced source via ctx, or the async lane keys off a
+    caller-wrapped debounce(field.value, ms) -- planner picks the shape the
+    recipe can TEST).
+D4. Source-mode reconcile: expose form.reconcile(policy?) as a one-liner
+    over engine reconcileAll (the masked-conflict tests already exist in
+    test/07) or defer past S3. Lean: ship it if it lands under ~15 lines
+    incl. d.ts + one test; otherwise one ADR line defers it.
+D5. Server-error story: promoted tested recipe (zero new API -- lean) vs a
+    tiny serverErrors helper export. Decide by which test reads cleaner;
+    record why.
+D6. isValid while an async verdict is pending: strict-false (pending =
+    not-yet-valid, hard fail-closed) vs last-settled-value (no flicker;
+    submit still gated by PINNED 6 either way). Record the reveal-gating
+    and submit-button UX consequences in the ADR.
 
 ## ASSERTIONS (qa falsifies each)
 
-- A1 Public API byte-compatible: all 53 existing tests green UNMODIFIED (the
-  file diff of test/0[0-4]*.test.js + 05-fail-closed is empty).
-- A2 Keystroke gates: flat AND dotted <= 16384 B / 50k ops still green;
-  dotted stays ~0 B/op steady-state (slot warm at construction).
-- A3 Schema keystroke: new recorded B/op materially below 20,990, with the
-  delta attributable to materialization (measured with the same t6 window
-  discipline: 50 ops, new-space delta).
-- A4 commit()/toPatch()/reinitialize proven by t5 fuzz vs the mirror: after
-  arbitrary op sequences, commit folds exactly the dirty paths, toPatch
-  lists exactly the dirty paths (set-back-to-initial excluded), reinitialize
-  leaves every field pristine reading next's values (missing paths
-  undefined).
-- A5 The S1 falsifier battery still fires: realias/reproto controls die at
-  t1 through the UPDATED anchors; whitelist/cycle/hostile construction
-  TypeErrors unchanged (t1 enforced).
-- A6 lite-store round-trip: store-sourced form stages overlays, reconciles
-  an authoritative write per the pinned D3 contract, commit() lands in the
-  store, submit reads committed values -- green under lite-form's gate AND
-  lite-store's own fast suite run on the symlinked checkout.
-- A7 Unreachability survives: mutate every object handed out or in
-  (initialValues, values() result, toPatch from/to, committed objects) and
-  prove reset()/reinitialize() still restore pristine state (extend
-  test/05's probes to the new surface).
-- A8 form.dispose() disposes the projection (engine dispose()) -- lite-leak
-  cycle stays flat with create/dispose churn including overlaid keys.
+- A1 Additive API: all 77 existing tests green UNMODIFIED (diff of
+  test/0[0-7]*.test.js empty vs f2dffc0).
+- A2 t6: flat/dotted/schema numbers for a no-async form unchanged vs the
+  1.2.0 recordings (byte-level: same gates, same recorded baselines);
+  async-validated keystroke measured + recorded with the debounce recipe
+  cross-referenced; no gate regresses.
+- A3 Merge fuzz vs mirror: seeded interleavings (incl. policy true/false/
+  throwing-policy paths) -- values()/isDirty/isValid/toPatch()/reset
+  targets agree with the mirror after every step; pool flat; no zombie
+  signals.
+- A4 The echo truth table proven directly: all four PINNED-2 rows x
+  {primitive leaf, object leaf, absent path}; object leaf under the
+  default policy stays a CONFLICT (documented behavior), a structural
+  policy confirms it; after ECHO the field is pristine (toPatch empty for
+  it, reset() a no-op on it); after CONFLICT reset() lands the SERVER
+  value and toPatch() reports from = server value.
+- A5 Async ordering: >= 3 manually-controlled deferreds settled out of
+  order -> only the latest lands; a stale settlement leaves NO trace (its
+  would-be error never flashes); isValidating flips exactly at the latest
+  settle; rejection handled per the pinned semantics; dispose() mid-flight
+  then settle = no-op, no throw.
+- A6 Submit fail-closed: a submit racing a pending async verdict can never
+  run onSubmit on stale validity (per the D6 mechanism); the three
+  documented double-submit defenses still hold with isValidating in the
+  mix.
+- A7 Unreachability extended: the `next` handed to reinitialize(next,
+  policy) is never aliased (mutating it afterwards changes nothing);
+  toPatch() from/to under merged baselines are copies (mutation-bite
+  probes extended from test/05/06).
+- A8 Soak + control: t7 async churn and merge churn leak-flat over 4096
+  cycles; the t9 stale-seq control (guard dropped in a patched copy) dies
+  with its named marker; realias/reproto still die at t1.
 
 ## NON-GOALS
 
-No lite-map, no async validation (S3/S4). No validation/reveal/submit-layer
-changes. No TTL surface. No prune() on the public form (unless D5 flips with
-a one-line ADR note). No bench-record refresh (deferred doc pass). No
-lite-store engine. No version bump (release does it).
+No field arrays (S4). No transport, no fetch wrapper, no cache, no retry.
+No timers or debounce machinery inside Form.js (recipe only). No shipped
+deep-equal (policies are caller-supplied). No lite-resource usage. No TTL
+surface. No bench-record refresh (deferred doc pass stays open). No
+merge-reinitialize in source mode (reconcile is that mode's story, per D4).
+No version bump (release does it).
 
 ## DONE WHEN
 
-values/dirty/reset/patch ride the gated engine; schema mode stopped cloning
-per keystroke (new baseline recorded); commit/toPatch/reinitialize ship
-additive and fuzz-proven; the 53-test suite is green unmodified; both t6
-keystroke gates hold; the ADR records the engine decision and the
-source-mode dirty contract; docs + counts + wiring updated; tree committed.
+the three flows are first-class and fuzz-proven vs the mirror; the merge
+table and ordering law are falsifiable (truth-table tests + the stale-seq
+control dies); a no-async form's t6 numbers are byte-identical to 1.2.0;
+ADR 0003 records every pinned and decided contract; docs, counts, wiring,
+and symlinks updated; tree committed.
