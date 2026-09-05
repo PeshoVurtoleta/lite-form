@@ -1,5 +1,78 @@
 # Changelog
 
+## Unreleased
+
+Server-data story (S3). Three flows, additive on the S2 engine seam: merge
+reinitialize, per-field async validation, dirty-only patch submit. The 1-arg
+contracts are frozen and the no-async keystroke path is allocation-identical
+to 1.2.0 -- its dirty body gained one tracked baselineRev read (the LF-12 fix)
+and one predicted-false latch check; t6 numbers unchanged, all 77 prior tests
+green unmodified.
+
+### Added
+- `reinitialize(next, policy)` -- MERGE variant (default mode only; source
+  mode throws a TypeError naming `reconcile`). Per registered field, with n =
+  the deep-copied next leaf and d = the draft: pristine ADOPTS n; dirty with
+  `Object.is(n, d)` (forced echo) or `policy(n, d) === true` ECHOES -- overlay
+  cleared, pristine at n; anything else is a CONFLICT -- the draft is kept
+  masking n while the baseline re-seeds underneath (`reset()` lands n,
+  `toPatch().from === n`). Only `=== true` confirms; a throwing policy is
+  atomic (verdicts pre-scanned before any mutation); one batch, one
+  baselineRev bump. touched clears on ADOPT/ECHO and survives CONFLICT;
+  `submitAttempted`/`submitError` are never written by a merge. Deep-copied
+  payloads mean object leaves never auto-confirm under the default policy.
+  The policy must be PURE: every mutating entry point (set/blur/reset/
+  setValues/commit/reinitialize/reconcile/submit/dispose, and lazy field
+  CREATION -- a field born mid-merge would seed from the pre-merge baseline
+  outside the verdict loop) throws a TypeError while the merge window is
+  open (pre-scan through the apply flush) --
+  verdicts are pre-scanned against a snapshot, and applying them over
+  policy-mutated state (or letting a nested merge splice the reused verdict
+  scratch) would be silent corruption.
+- `validatorsAsync` + `asyncSources` + `field.isValidating` +
+  `form.isValidating` -- a per-field async validation lane with a
+  last-write-wins ordering law: per-field monotone sequence, stale
+  settlements (resolve or reject) dropped whole, `isValidating` true exactly
+  while the latest is unsettled, `dispose()` mid-flight settlements are
+  no-ops, the latest rejection surfaces as the field error (never silently
+  valid). `isValid` is strict-false while any verdict is pending, so
+  `submit()` refuses during validation through the existing gate. No timers
+  inside Form.js -- debounce is the caller's via the `asyncSources`
+  lite-debounce recipe (tested). A form with no async validators allocates no
+  lane machinery and keeps the 1.2.0 keystroke numbers byte-for-byte;
+  async-validated keystroke measured 629.703 B/op (recorded, t6 window (d):
+  trigger + promise creation, settlements outside the window).
+- `submit(ev?, { patch: true })` -- posts `toPatch()` to `onSubmit` instead of
+  `values()`; the rest of the submit lifecycle is the same code path. An
+  empty patch still submits `[]` (the caller checks `.length`).
+- `form.reconcile(policy?)` -- source-mode merge: drops exactly the overlays
+  the live source now agrees with (engine `reconcileAll`, default
+  `Object.is`). Legal in default mode, where it is a no-op under the default
+  policy by design (clear-on-initial makes a confirmable overlay impossible).
+- Torture: t8-async ordering tier (seeded out-of-order settlements, zero wall
+  clock; registered before t9 so patched-module controls die there), t9
+  `staleseq` control (seq guard disabled must die "t8 LF-09 stale settlement
+  landed"), t5 fuzz gains the merge op with an independent merge mirror plus
+  per-path dirty/touched and toPatch from/to value comparison, t7 async-churn
+  and merge-churn soak loops, t6 window (d). 41 new tests bring the suite to
+  118.
+
+### Fixed
+- LF-12 (latent since 1.2.0): a `field.dirty()` read (cached) before a
+  `commit()` -- or a forced-echo merge row -- stayed true forever after it.
+  The fold is value-preserving, so `value()`'s output never changes across a
+  commit and the Object.is cutoff never re-ran the cached dirty computed
+  while `initialRef` was re-captured underneath it. `dirty` now tracks
+  `baselineRev` (the re-capture notifier) directly. Found by the new t5
+  per-path oracle; regression tests pinned in test/08.
+
+### Changed
+- devDependencies: `@zakkster/lite-store` floor `^1.3.0` -> `^1.4.0` (1.4.0
+  is its witness-gated release); `@zakkster/lite-debounce` `^1.1.0` added
+  (recipe test only). Peers unchanged.
+- The stale "use lite-resource inside an effect" async aside is gone from
+  Form.js and README -- the shipped async seam replaced it.
+
 ## 1.2.0 - 2026-09-05
 
 Engine swap (S2). The value core now rides a `@zakkster/lite-project` projection

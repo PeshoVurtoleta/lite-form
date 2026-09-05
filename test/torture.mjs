@@ -11,7 +11,7 @@
  *     t0  identities + reveal truth table   t1  degenerate + registered-failing
  *     t2  scale (1000+ fields)              t5  differential fuzz vs an oracle
  *     t6  the zero-alloc gate + baselines   t7  soak + retention witnesses
- *     t9  controls (each gate, broken, must fail)
+ *     t8  async ordering (LF-09)            t9  controls (each gate, broken, must fail)
  *
  * lite-gc-profiler is one-measurement-at-a-time, so tiers run STRICTLY
  * SEQUENTIALLY -- never nested, never concurrent.
@@ -112,6 +112,7 @@ async function main() {
   const { run: t5 } = await import("./torture/t5-fuzz.mjs");
   const { run: t6 } = await import("./torture/t6-alloc.mjs");
   const { run: t7 } = await import("./torture/t7-soak.mjs");
+  const { run: t8 } = await import("./torture/t8-async.mjs");
   const { run: t9 } = await import("./torture/t9-controls.mjs");
 
   // --- control mode: run ONLY the targeted tier, never t9 --------------------
@@ -144,6 +145,7 @@ async function main() {
     ["t5 fuzz", t5],
     ["t6 alloc", t6],
     ["t7 soak", t7],
+    ["t8 async", t8],
     ["t9 controls", t9],
   ];
 

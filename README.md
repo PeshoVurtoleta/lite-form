@@ -54,6 +54,7 @@ form. Pool returns to baseline (`stats().activeNodes === 0`).
 - [The two validation pipelines](#the-two-validation-pipelines)
 - [Cross-field validation](#cross-field-validation)
 - [Schema (Zod / Yup)](#schema-zod--yup)
+- [Async validation](#async-validation)
 - [Surfacing server errors (the `setFieldError` story)](#surfacing-server-errors-the-setfielderror-story)
 - [Submit lifecycle](#submit-lifecycle)
 - [API reference](#api-reference)
@@ -291,13 +292,80 @@ const yupAdapter = (schema) => async (values) => {
 };
 ```
 
-> Async schema support is a v1.1 layer (currently lite-form's `validate` is
-> sync). For async business validation, use [@zakkster/lite-resource](https://www.npmjs.com/package/@zakkster/lite-resource)
-> inside an effect that reads the form values.
+> The form-level `validate` schema is sync (one hoisted run per keystroke).
+> Per-field ASYNC business validation is first-class since v1.3.0 -- see
+> [Async validation](#async-validation).
 
 Schema errors merge with per-field validators: per-field message wins if
 present, otherwise the schema message shows. Useful for "the schema validates
 shape; the per-field validator checks availability".
+
+---
+
+## Async validation
+
+`validatorsAsync` gives a field an async lane beside its sync validator -- your
+promise, sequenced by lite-form. There is no timer, no debounce, no transport
+machinery inside lite-form: the validator returns a promise; lite-form
+guarantees ordering.
+
+```js
+const form = createForm({
+    initialValues: { username: "" },
+    validators:      { username: (v) => v ? null : "required" },   // sync lane, instant
+    validatorsAsync: {
+        username: async (v) => {
+            const r = await fetch("/api/taken?u=" + encodeURIComponent(v));
+            return (await r.json()).taken ? "already taken" : null;
+        },
+    },
+});
+
+form.field("username").isValidating();  // true while the LATEST check is unsettled
+form.isValidating();                    // true while ANY field's check is unsettled
+```
+
+The ordering contract:
+
+- **Last write wins.** Every trigger bumps a per-field sequence; a settlement
+  (resolve OR reject) carrying a stale sequence is dropped whole -- no signal
+  write, no error flash, no trace.
+- **Pending is not-yet-valid.** While any async verdict is pending, `isValid()`
+  is `false` (strict fail-closed). `submit()` therefore refuses while
+  validation is in flight -- a pending verdict can never race a submit into a
+  false positive.
+- **A rejection is a verdict.** The latest rejection surfaces as the field's
+  error message (a rejection can never leave the field valid); stale
+  rejections are swallowed with no unhandled-rejection.
+- **`dispose()` mid-flight is safe.** A settlement arriving after `dispose()`
+  is a complete no-op.
+- **Off-cost when unused.** A form with no `validatorsAsync` allocates no
+  async machinery and keeps the 1.2.0 keystroke numbers byte-for-byte; on a
+  mixed form, sync-only fields pay nothing either (their `isValidating` is a
+  shared frozen constant).
+
+**Debouncing (the lite-debounce recipe).** Firing a server check per keystroke
+is the caller's decision -- lite-form owns no timers. Hand the async lane a
+debounced reader via `asyncSources`; the check then re-fires when the debounced
+read changes instead of on every keystroke:
+
+```js
+import { debounce } from "@zakkster/lite-debounce";
+
+const form = createForm({
+    initialValues: { username: "" },
+    validatorsAsync: { username: checkAvailability },
+    asyncSources: {
+        // called once at construction, inside the form's own root:
+        username: (fld) => debounce(() => fld.value(), 300),
+    },
+});
+```
+
+An async-validated keystroke allocates -- promise machinery is inherent
+(measured 629.703 B/op, recorded in the torture tier, settlements outside the
+window). That cost is exactly why the debounce recipe exists; the sync path
+stays gated at zero.
 
 ---
 
@@ -436,6 +504,8 @@ document; that's where throttle wins.
 | `initialValues` | `Record<string, any>`                               | `{}`             |
 | `validators`    | `Record<string, (value, ctx) => string \| null>`    | `{}`             |
 | `validate`      | `(values) => Record<string, string \| null>`        | --                |
+| `validatorsAsync` | `Record<string, (value, ctx) => Promise<string \| null>>` | `{}`      |
+| `asyncSources`  | `Record<string, (field, ctx) => (() => any)>`       | the field's value |
 | `fieldOpts`     | `Record<string, { parse?, format? }>`               | `{}`             |
 | `validateOn`    | `"change" \| "blur" \| "submit"`                    | `"change"`       |
 | `onSubmit`      | `(values) => void \| Promise<void>`                 | --                |
@@ -447,8 +517,8 @@ source instead of the detached baseline. Edits stage as overlays (the source is
 never written by an edit); `commit()` writes through. In this mode `dirty` is
 overlay presence -- an authoritative source write under an un-overlaid field is
 not an edit and never flips dirty; a conflicting write under an overlaid field
-stays masked. Without `source`, the form uses the default detached baseline and
-lite-project is not loaded.
+stays masked. Without `source`, the form projects the detached baseline through
+the same engine -- lite-project is imported statically and required in BOTH modes.
 
 ### `form.field(path) -> Field`
 
@@ -467,6 +537,7 @@ lazily on first access.
 | `rawError`    | `ReadSignal<string\|null>` | always-live validity (ignores reveal); drives isValid  |
 | `dirty`       | `ReadSignal<boolean>`      | `!Object.is(value(), initialRef)`; in-place mutation does not flip it, `set(newRef)` does |
 | `touched`     | `ReadSignal<boolean>`      | blurred at least once                                  |
+| `isValidating`| `ReadSignal<boolean>`      | latest async check unsettled; async-validated fields only (a shared frozen `false` otherwise) |
 | `set(v)`      | function                   |                                                        |
 | `blur()`      | function                   | marks touched                                          |
 | `reset()`     | function                   | back to initial value, clears touched                  |
@@ -482,8 +553,10 @@ lazily on first access.
 | `reset()`          | `() => void`                        | restore initial, clear touched + submit state  |
 | `commit(path?)`    | `(path?) => void`                   | fold dirty values into the baseline (all, or one path); committed fields go pristine, `reset()` now targets the committed state; values deep-copied through the whitelist; an unregistered `path` throws a `TypeError` (loud, never a lazy field creation) |
 | `toPatch()`        | `() => Array<{path, from, to}>`     | exactly the dirty paths (`from` = baseline, `to` = current); a field set back to its initial ref is excluded; untracked + read-only, safe in an effect |
-| `reinitialize(next)`| `(next) => void`                   | re-seed like `initialValues` (deep-copied + whitelist-validated BEFORE any state change -- atomic `TypeError` on bad input); drops every edit, paths absent from `next` re-seed `undefined`, clears touched + submit state |
-| `submit(ev?)`      | `(ev?) => Promise<boolean>`         | true if `onSubmit` ran without throwing        |
+| `reinitialize(next, policy?)`| `(next, policy?) => void`  | 1-arg: re-seed like `initialValues` (deep-copied + whitelist-validated BEFORE any state change -- atomic `TypeError` on bad input); drops every edit, absent paths re-seed `undefined`, clears touched + submit state. With a `policy`: MERGES instead -- dirty fields survive unless echoed (see [The engine](#the-engine)); default-mode only (source mode throws -- use `reconcile`) |
+| `reconcile(policy?)`| `(policy?) => void`                | source-mode merge: drop exactly the overlays the source now agrees with (default `Object.is`); legal in default mode too (a no-op under the default policy, by design) |
+| `submit(ev?, opts?)`| `(ev?, {patch?}) => Promise<boolean>` | true if `onSubmit` ran without throwing; `opts.patch: true` posts `toPatch()` to `onSubmit` instead of `values()` (an empty patch still submits `[]` -- the caller checks `.length`) |
+| `isValidating`     | `ReadSignal<boolean>`               | true while ANY field's async check is unsettled |
 | `isValid`          | `ReadSignal<boolean>`               | always live                                    |
 | `isDirty`          | `ReadSignal<boolean>`               |                                                |
 | `isSubmitting`     | `ReadSignal<boolean>`               |                                                |
@@ -571,6 +644,34 @@ form.isDirty();        // false -- every field pristine again
 form.field("name").reset();   // stays "Bob" -- reset() targets the committed state
 ```
 
+**Server data while the user edits: `reinitialize(next, policy)`.** The 1-arg
+form is unchanged (atomic re-seed, drops every edit). Passing a `policy` merges
+instead: dirty fields survive unless the server echoed them. Per registered
+field, with `n` = the deep-copied `next` leaf and `d` = the user's draft:
+
+| field state | verdict | result |
+|---|---|---|
+| pristine | ADOPT | takes `n`; stays pristine; touched cleared |
+| dirty, `Object.is(n, d)` or `policy(n, d) === true` | ECHO | overlay cleared; pristine at `n`; touched cleared |
+| dirty, anything else | CONFLICT | draft kept (masks `n`); baseline re-seeds underneath -- `reset()` now lands `n` and `toPatch().from === n`; touched kept |
+| path absent from `next` | the same table with `n = undefined` | |
+
+The default policy is `Object.is` (confirm-on-echo). Deep-copied payloads mean
+an OBJECT leaf can never `Object.is`-echo -- object edits are always conflicts
+under the default; pass a structural policy when your leaves are objects. Only
+`=== true` confirms (fail closed), a throwing policy is atomic (nothing
+mutated), and a merge never touches `submitAttempted`/`submitError` -- a
+background refresh must not un-reveal errors mid-flow. The policy must be
+PURE: any mutating form call from inside the merge window (`set`, `commit`,
+`reset`, a nested `reinitialize`, ...) throws a `TypeError` -- verdicts are
+pre-scanned against a snapshot, and applying them over mutated state would be
+silent corruption.
+
+In source mode there is no detached baseline to re-seed, so the merge story is
+`form.reconcile(policy?)` -- drop exactly the overlays the live source now
+agrees with. `reinitialize(next, policy)` in source mode throws (loud, never a
+silent fallback).
+
 Allocation, measured on Node 26 (`node --expose-gc --preserve-symlinks
 test/torture.mjs`):
 
@@ -579,6 +680,7 @@ test/torture.mjs`):
 | flat, per-field        | ~0 (noise) | gated                                |
 | dotted, 3-segment      | 0.112      | GATED (<= 16384 B / 50K ops)         |
 | schema mode            | 113.440    | recorded baseline (was 20,990 in 1.1.0; ceiling 32768 B/op) |
+| async-validated        | 629.703    | recorded (trigger + promise creation; settlements outside the window; see [Async validation](#async-validation)) |
 
 The schema-mode figure is a 185x fall from 1.1.0's 20,990 B/op -- the scratch
 tree replaced a full per-keystroke clone.
@@ -593,7 +695,7 @@ tree replaced a full per-keystroke clone.
 
 ## Testing
 
-lite-form ships **77 deterministic tests** (`node:test`, zero runtime deps):
+lite-form ships **118 deterministic tests** (`node:test`, zero runtime deps):
 
 ```sh
 npm test          # the fast suite
@@ -663,10 +765,10 @@ node --expose-gc --preserve-symlinks test/torture.mjs
 - **Not a renderer.** lite-form gives you state; you decide how to render. Pair
   with `@zakkster/lite-signal-dom`, `@zakkster/lite-element`, vanilla
   `addEventListener`, or your framework of choice.
-- **Not async-validated.** `validators` and `validate` are sync. For async
-  business rules (server-side uniqueness checks, etc.), use
-  [@zakkster/lite-resource](https://www.npmjs.com/package/@zakkster/lite-resource)
-  inside an effect that reads the form's values.
+- **Not a fetch/debounce layer.** `validatorsAsync` sequences YOUR promises
+  (last-write-wins, strict-false while pending) -- lite-form owns no timers and
+  no transport. Debounce belongs to the caller via `@zakkster/lite-debounce`
+  (see [Async validation](#async-validation)).
 - **Not a field-array helper.** Dotted paths work for nested objects and
   arrays, but if you need `<FieldArray>`-style adds/removes/reorders with
   preserved field identity, that's a future `@zakkster/lite-form-fields`

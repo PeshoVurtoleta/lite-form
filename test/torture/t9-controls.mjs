@@ -36,7 +36,7 @@ const here = dirname(fileURLToPath(import.meta.url)); // test/torture
 const entry = join(here, "..", "torture.mjs");        // test/torture.mjs
 const formSrc = join(here, "..", "..", "Form.js");    // the REAL Form.js
 
-const CONTROLS = ["grow", "alloc", "drop", "leak", "realias", "reproto"];
+const CONTROLS = ["grow", "alloc", "drop", "leak", "realias", "reproto", "staleseq"];
 
 const MARKERS = {
   grow: "the signal pool grew",
@@ -45,6 +45,7 @@ const MARKERS = {
   leak: "t7: leak witness sees",
   realias: "t1 LF-02",
   reproto: "t1 LF-03",
+  staleseq: "t8 LF-09 stale settlement landed",
 };
 
 // Source-patch controls: an anchor that must occur EXACTLY once in Form.js and
@@ -58,6 +59,12 @@ const PATCH = {
   reproto: {
     anchor: 'if (hostileSeg(k)) throwHostile(k, p ? p + "." + k : k);',
     replacement: 'if (false) throwHostile(k, p ? p + "." + k : k);',
+  },
+  // staleseq: disable the settlement-callback seq guard so a stale (or post-
+  // dispose) settlement lands its verdict; t8's ordering test must catch it.
+  staleseq: {
+    anchor: "if (disposed || lane.seq !== mySeq) return;",
+    replacement: "if (false) return;",
   },
 };
 

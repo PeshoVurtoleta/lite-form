@@ -62,7 +62,8 @@
   "devDependencies": {
     "@zakkster/lite-signal": "^1.5.0",
     "@zakkster/lite-project": "^1.4.1",
-    "@zakkster/lite-store": "^1.3.0",
+    "@zakkster/lite-store": "^1.4.0",
+    "@zakkster/lite-debounce": "^1.1.0",
     "@zakkster/lite-leak": "^1.10.0",
     "@zakkster/lite-gc-profiler": "^1.16.0"
   },

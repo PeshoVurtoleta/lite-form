@@ -4,8 +4,20 @@
  * -----------------------------------------------------------------------------
  * Form STATE as fine-grained signals. No DOM, no virtual DOM, no compiler -- bind
  * the field signals with @zakkster/lite-signal-dom (or anything). The only hard
- * dependency is lite-signal core; async validation (lite-resource), field arrays,
- * and draft persistence (lite-persist) layer on top without bloating this core.
+ * dependency is lite-signal core; the value engine rides a @zakkster/lite-project
+ * projection.
+ *
+ * ASYNC VALIDATION SEAM (off-cost when unused). `validatorsAsync[path]` adds a
+ * per-field async lane: one form-owned effect reads the field's TRIGGER SOURCE
+ * (its value by default, or a caller-supplied `asyncSources[path]` reader, e.g.
+ * a lite-debounce handle over the field's value), runs the async validator, and
+ * writes its verdict via a monotonic seq guard -- only the LATEST settlement
+ * lands, stale ones are dropped whole (no signal write, no trace). A field
+ * exposes `isValidating`; the form exposes `isValidating` (any lane pending).
+ * This file holds no timer or scheduling machinery of any kind; debounce belongs
+ * to the caller via the lite-debounce recipe. lite-form only sequences caller
+ * promises with plain .then callbacks. A form with no async validators allocates NO per-field
+ * async machinery and reproduces the no-async keystroke cost byte-for-byte.
  *
  * TWO VALIDATION MODES, both cutoff-gated:
  *  - Per-field validators (`validators[path]`) -- each reads ONLY its own value, so
@@ -67,6 +79,12 @@ const NULL = () => null;                                  // shared "no validato
 const EMPTY = {};                                         // shared empty errors / opts
 const normErr = (e) => (e ? e : null);                    // falsy (undefined/false/"") -> null
 const eq = Object.is;
+// Shared frozen ReadSignal-shaped FALSE: field/form isValidating on a form (or a
+// field) with no async machinery. One constant, never a per-field signal.
+const FALSE = () => false;
+FALSE.peek = () => false;
+// Merge verdict codes (reinitialize(next, policy)). Small ints, no per-row alloc.
+const ADOPT = 0, ECHO = 1, CONFLICT = 2;
 const isPlainObj = (v) => v != null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date);
 
 // Prototype-chain segments are rejected wherever a path enters the form: a
@@ -245,7 +263,17 @@ export function createForm(config = {}) {
         validateOn = "change",
         onSubmit,
         registry,
+        validatorsAsync = EMPTY,
+        asyncSources = EMPTY,
     } = config;
+
+    // Async seam wiring. asyncPaths / hasAsync gate every off-cost decision: a
+    // form with no async validators allocates none of the per-field lane machinery
+    // and adds no signal reads to the keystroke path.
+    const asyncPaths = Object.keys(validatorsAsync);
+    const hasAsync = asyncPaths.length > 0;
+    const asyncLanes = [];                                // per-async-field lanes, torn down on dispose
+    let disposed = false;                                 // set FIRST in dispose(): a post-dispose settlement is a no-op
 
     const S = registry ? registry.signal : dSignal;
     const C = registry ? registry.computed : dComputed;
@@ -278,6 +306,22 @@ export function createForm(config = {}) {
     const submitAttempted = sig(false);
     const submitting = sig(false);
     const submitErr = sig(null);
+
+    // Form-level count of async lanes whose LATEST seq is unsettled. Allocated
+    // ONLY when the form has async fields (off-cost otherwise). Increments on a
+    // lane.pending false->true edge, decrements only when a latest-seq settlement
+    // flips it true->false -- a re-trigger while already pending bumps seq only.
+    const pendingCount = hasAsync ? sig(0) : null;
+    // Merge verdict scratch (reinitialize(next, policy)): form-owned, lazily
+    // allocated on first merge, length-reused after. Never touched by a hot path.
+    let verdicts = null;
+    // Re-entrancy latch: a merge policy must be PURE. Verdicts are pre-scanned
+    // against a snapshot of the drafts; a policy that mutated the form mid-scan
+    // would have those verdicts applied over different state (and a nested merge
+    // would splice the reused verdicts scratch). Every mutating entry point
+    // throws while the latch is up -- pre-scan through the apply flush.
+    let merging = false;
+    const throwMerging = () => { throw new TypeError("[lite-form] cannot mutate the form from inside a merge policy"); };
 
     // ENGINE. lite-form's value core is a lite-project projection. In the default
     // mode the projection rides fromAccessors over the detached baseline; in
@@ -364,13 +408,17 @@ export function createForm(config = {}) {
         const segs = path.indexOf(".") < 0 ? null : path.split(".");
         const seeded = copyLeaf(readBase(baseline, path, segs));
         const validator = validators[path];
+        const asyncFn = validatorsAsync[path];
         const o = fieldOpts[path] || EMPTY;
 
         // initialRef migrates onto the record: dirty() then costs one property load.
+        // asyncLane is null on EVERY record (uniform hidden class) -- populated only
+        // for a path that has an async validator, so a sync-only field pays nothing.
         const f = {
             path,
             segs,                                         // cached path segments for the snapshot walk
             initialRef: seeded,
+            asyncLane: null,
         };
 
         // value is a WritableSignal-shaped facade over the engine handle. value()
@@ -381,8 +429,8 @@ export function createForm(config = {}) {
         const value = () => handle.get(path);
         value.peek = () => handle.peek(path);
         value.set = sourceMode
-            ? (v) => handle.set(path, v)
-            : (v) => (eq(v, f.initialRef) ? handle.clear(path) : handle.set(path, v));
+            ? (v) => { if (merging) throwMerging(); handle.set(path, v); }
+            : (v) => { if (merging) throwMerging(); if (eq(v, f.initialRef)) handle.clear(path); else handle.set(path, v); };
         value.update = (fn) => value.set(fn(handle.peek(path)));
         value.subscribe = (fn) => {
             // Detached (createRoot) so a subscribe called inside a consumer effect
@@ -403,45 +451,126 @@ export function createForm(config = {}) {
         // Per-field validity: depends ONLY on this field's value (lean keystroke path).
         const rawError = validator ? cmp(() => normErr(validator(value(), ctx))) : NULL;
         // Default dirty is one closure read + one Object.is against the captured
-        // initialRef -- byte-identical to S1. Source dirty is overlay presence
-        // (dirtyCount() is the tracked engine signal; isOverlaid the per-key read).
+        // initialRef -- the S1 compare. It must ALSO track baselineRev: initialRef
+        // is a plain property, and commit()/forced-echo merge re-capture it while
+        // value()'s output stays identical (folding is value-preserving), so the
+        // value cutoff alone would strand a pre-commit cached dirty=true (LF-12).
+        // Source dirty is overlay presence (dirtyCount() is the tracked engine
+        // signal; isOverlaid the per-key read).
         const dirty = sourceMode
             ? cmp(() => { void handle.dirtyCount(); return handle.isOverlaid(path); })
-            : cmp(() => !eq(value(), f.initialRef));
+            : cmp(() => { baselineRev(); return !eq(value(), f.initialRef); });
+        // Async lane: allocated ONLY for a path with an async validator. Its seq +
+        // pending + err signals exist here so f.isValidating can point at pending
+        // and the error body can read err; the reader factory + settlement effect
+        // are wired AFTER the record is fully assembled (see wireAsyncLane).
+        const lane = asyncFn
+            ? { seq: 0, pending: sig(false), err: sig(null), reader: null, ownReader: null, disp: null }
+            : null;
+        if (lane) f.asyncLane = lane;
         // Displayed error: reveal-gated; per-field error first, then schema fallback.
         // Reading formErrors() here is an O(1) lookup whose result is Object.is-cutoff,
-        // so a field only re-renders when ITS message changes.
-        const error = cmp(() => {
-            const reveal = submitAttempted()
-                || (validateOn === "change" ? dirty()
-                    : validateOn === "blur" ? touched()
-                        : false);
-            if (!reveal) return null;
-            const own = rawError();
-            if (own) return own;
-            return formErrors ? normErr(formErrors()[path]) : null;
-        });
+        // so a field only re-renders when ITS message changes. TWO hoisted bodies:
+        // the sync variant is byte-identical to the no-async build; the async variant
+        // additionally surfaces the latest-seq lane verdict (lane.err).
+        const error = lane
+            ? cmp(() => {
+                const reveal = submitAttempted()
+                    || (validateOn === "change" ? dirty()
+                        : validateOn === "blur" ? touched()
+                            : false);
+                if (!reveal) return null;
+                const own = rawError();
+                if (own) return own;
+                const ae = lane.err();
+                if (ae) return ae;
+                return formErrors ? normErr(formErrors()[path]) : null;
+            })
+            : cmp(() => {
+                const reveal = submitAttempted()
+                    || (validateOn === "change" ? dirty()
+                        : validateOn === "blur" ? touched()
+                            : false);
+                if (!reveal) return null;
+                const own = rawError();
+                if (own) return own;
+                return formErrors ? normErr(formErrors()[path]) : null;
+            });
 
         f.value = value;                                  // value() reads+tracks; value.peek() untracked
         f.error = error;                                  // error() = displayed error (reveal-gated)
         f.dirty = dirty;                                  // dirty() = overlay presence / value !== initialRef
         f.touched = touched;                              // touched() reads
         f.rawError = rawError;                            // internal: per-field validity for isValid
+        f.isValidating = lane ? lane.pending : FALSE;     // per-field pending; shared FALSE when sync-only
         f.set = value.set;
-        f.blur = () => touched.set(true);
+        f.blur = () => { if (merging) throwMerging(); touched.set(true); };
         f.reset = sourceMode
-            ? () => handle.clear(path)
-            : () => B(() => { resetField(f); bumpRev(); });
+            ? () => { if (merging) throwMerging(); handle.clear(path); }
+            : () => { if (merging) throwMerging(); B(() => { resetField(f); bumpRev(); }); };
         f.props = () => ({
             value: o.format ? o.format(value()) : value(),
             onInput: (ev) => value.set(o.parse ? o.parse(evValue(ev)) : evValue(ev)),
-            onBlur: () => touched.set(true),
+            onBlur: () => { if (merging) throwMerging(); touched.set(true); },
         });
 
         fields.set(path, f);
         fieldList.push(f);
         U(() => handle.get(path));                        // warm the slot AFTER fields.set (baselineGet needs the record)
+        if (lane) wireAsyncLane(f, lane, asyncFn);        // reader factory + effect AFTER the record is fully assembled
         return f;
+    }
+
+    // Wire an async field's lane: call the (optional) reader factory now that the
+    // field record is fully assembled (value facade + isValidating present -- AM-5),
+    // then create ONE form-owned effect that tracks the reader and (re)triggers the
+    // async validator. A factory that throws propagates -> construction fails closed.
+    // The default reader is the field's own value facade and is NEVER torn down.
+    function wireAsyncLane(f, lane, asyncFn) {
+        const factory = asyncSources[f.path];
+        const reader = factory ? factory(f, ctx) : f.value;
+        lane.reader = reader;
+        if (factory) lane.ownReader = reader;             // caller-owned handle (e.g. debounce): disposed on teardown
+        // Detached (createRoot) so this effect is form-owned, not a child of any
+        // consumer that happened to be tracking at construction.
+        lane.disp = CR(() => EF(() => {
+            const v = lane.reader();                      // tracks the trigger source (value or debounced source)
+            U(() => triggerAsync(lane, asyncFn, v));
+        }));
+        asyncLanes.push(lane);
+    }
+
+    // (Re)trigger the async validator for a lane. Bumps the monotonic seq; a
+    // pending false->true edge increments pendingCount ONCE (a re-trigger while
+    // already pending bumps seq only). A synchronous throw is a rejection.
+    function triggerAsync(lane, asyncFn, v) {
+        const mySeq = ++lane.seq;
+        if (!lane.pending.peek()) {
+            B(() => { lane.pending.set(true); pendingCount.set(pendingCount.peek() + 1); });
+        }
+        let p;
+        try { p = asyncFn(v, ctx); }
+        catch (e) { settleAsync(lane, mySeq, e, true); return; }
+        // Normalize (a non-promise return settles on a microtask). Both arms attach
+        // so no settlement path can surface an unhandledRejection.
+        Promise.resolve(p).then(
+            (msg) => settleAsync(lane, mySeq, msg, false),
+            (reason) => settleAsync(lane, mySeq, reason, true),
+        );
+    }
+
+    // Land a settlement IFF it is the latest seq and the form is live. A stale or
+    // post-dispose settlement is dropped WHOLE -- no signal write, no trace. A
+    // rejection can never leave the field valid: it coerces to a non-empty string.
+    function settleAsync(lane, mySeq, payload, rejected) {
+        if (disposed || lane.seq !== mySeq) return;
+        const msg = rejected
+            ? (String(payload && payload.message || payload) || "async validator rejected")
+            : normErr(payload);
+        B(() => {
+            lane.err.set(msg);
+            if (lane.pending.peek()) { lane.pending.set(false); pendingCount.set(pendingCount.peek() - 1); }
+        });
     }
 
     // Internal per-field reset body (default mode), no rev bump. Re-captures
@@ -457,6 +586,9 @@ export function createForm(config = {}) {
     function getField(path) {
         const f = fields.get(path);
         if (f !== undefined) return f;                    // falsy-record fail-closed: only a real record hits
+        // Creation is a mutation: a field born mid-merge would seed its initialRef
+        // from the pre-merge baseline outside the verdict loop (which captured n).
+        if (merging) throwMerging();
         return lazyField(path);
     }
 
@@ -474,6 +606,8 @@ export function createForm(config = {}) {
     {
         const declared = new Set(Object.keys(validators));
         Object.keys(fieldOpts).forEach((p) => declared.add(p));
+        Object.keys(validatorsAsync).forEach((p) => declared.add(p));
+        Object.keys(asyncSources).forEach((p) => declared.add(p));
         leafPaths(baseline, "", []).forEach((p) => declared.add(p));
         declared.forEach(makeField);
     }
@@ -481,16 +615,38 @@ export function createForm(config = {}) {
     // isValid = no schema errors AND no per-field validator errors. Schema runs once
     // (formErrors cached); per-field rawErrors are cached, so typing one field doesn't
     // re-run the others. Cutoff stops isValid recomputing while validity is unchanged.
-    const isValid = cmp(() => {
-        if (formErrors) {
-            const e = formErrors();
-            for (const k in e) if (e[k]) return false;
-        }
-        for (const path in validators) {
-            if (getField(path).rawError() != null) return false;
-        }
-        return true;
-    });
+    // TWO hoisted bodies. No async paths -> the no-async build verbatim. With async
+    // paths -> D6 strict-false while any lane is pending (isValidating() true implies
+    // isValid() false -- the fail-closed submit gate needs no extra submit code),
+    // then the same schema + per-field checks, then each lane's latest verdict.
+    const isValid = hasAsync
+        ? cmp(() => {
+            if (pendingCount() > 0) return false;
+            if (formErrors) {
+                const e = formErrors();
+                for (const k in e) if (e[k]) return false;
+            }
+            for (const path in validators) {
+                if (getField(path).rawError() != null) return false;
+            }
+            for (let i = 0; i < asyncPaths.length; i++) {
+                if (getField(asyncPaths[i]).asyncLane.err() != null) return false;
+            }
+            return true;
+        })
+        : cmp(() => {
+            if (formErrors) {
+                const e = formErrors();
+                for (const k in e) if (e[k]) return false;
+            }
+            for (const path in validators) {
+                if (getField(path).rawError() != null) return false;
+            }
+            return true;
+        });
+    // form.isValidating: shared FALSE when no async fields (off-cost), else true
+    // exactly while some lane's latest seq is unsettled.
+    const isValidating = hasAsync ? cmp(() => pendingCount() > 0) : FALSE;
     // Clear-on-initial (default) makes overlay presence coincide with dirty, so the
     // form-level flag is the tracked engine count. Source mode reads the same count
     // (overlay presence is the honest dirty signal without a captured baseline).
@@ -507,6 +663,7 @@ export function createForm(config = {}) {
     }
 
     function reset() {
+        if (merging) throwMerging();
         if (sourceMode) { handle.revert(); return; }
         B(() => {
             for (let i = 0; i < fieldList.length; i++) resetField(fieldList[i]);
@@ -521,6 +678,7 @@ export function createForm(config = {}) {
     // so a set-back-to-initial field is never visited. commit(path) folds one key.
     // Committed values are deep-copied through the whitelist (baselineSet).
     function commit(path) {
+        if (merging) throwMerging();
         B(() => {
             if (path !== undefined) {
                 guardPath(path);
@@ -548,42 +706,114 @@ export function createForm(config = {}) {
         return out;
     }
 
-    // Re-seed the whole form like initialValues. Validates + deep-copies `next`
-    // atomically BEFORE any state change (a hostile key / cycle / uncopyable leaf
-    // throws with nothing mutated). Every existing field re-captures its initialRef
-    // from the new baseline (absent path -> undefined); overlays reverted;
-    // touched/submit state cleared.
-    function reinitialize(next) {
-        if (!isPlainObj(next)) throw new TypeError("[lite-form] reinitialize(next) requires a plain object");
-        const nb = cloneConfig(next);                     // throws BEFORE any mutation -> atomic
-        B(() => {
-            baseline = nb;
-            handle.revert();
-            for (let i = 0; i < fieldList.length; i++) {
-                const f = fieldList[i];
-                const reseed = copyLeaf(readBase(baseline, f.path, f.segs));
-                f.initialRef = reseed;
-                f.touched.set(false);
+    // Re-seed the whole form like initialValues, in one of TWO shapes:
+    //
+    //  1-arg reinitialize(next) -- FROZEN 1.2.0 contract (both modes): atomic
+    //    validate+copy, then drop EVERY edit. Every field re-captures its initialRef
+    //    from the new baseline (absent path -> undefined); overlays reverted;
+    //    touched + submit state cleared.
+    //
+    //  2-arg reinitialize(next, policy) -- MERGE (default mode only). Fresh server
+    //    data lands WHILE the user edits: a pristine field adopts the new value, a
+    //    dirty field whose edit the server ECHOed goes pristine at the new value, a
+    //    dirty field whose edit CONFLICTs keeps the draft (masking the new value)
+    //    but re-seeds the baseline underneath so reset()/toPatch() target it. The
+    //    merge is atomic: validate+copy and the verdict pre-scan run with NO
+    //    mutation, so a hostile leaf OR a throwing policy leaves the form untouched.
+    function reinitialize(next, policy) {
+        if (merging) throwMerging();
+        if (policy === undefined) {
+            if (!isPlainObj(next)) throw new TypeError("[lite-form] reinitialize(next) requires a plain object");
+            const nb = cloneConfig(next);                 // throws BEFORE any mutation -> atomic
+            B(() => {
+                baseline = nb;
+                handle.revert();
+                for (let i = 0; i < fieldList.length; i++) {
+                    const fresh = fieldList[i];
+                    const reseed = copyLeaf(readBase(baseline, fresh.path, fresh.segs));
+                    fresh.initialRef = reseed;
+                    fresh.touched.set(false);
+                }
+                submitAttempted.set(false);
+                submitErr.set(null);
+                bumpRev();
+                scratch = null;
+            });
+            return;
+        }
+        // --- 2-arg MERGE ------------------------------------------------------
+        // PHASE 0 REFUSE (no mutation).
+        if (sourceMode) throw new TypeError("[lite-form] merge-reinitialize is default-mode only; use reconcile(policy)");
+        if (!isPlainObj(next)) throw new TypeError("[lite-form] reinitialize(next, policy) requires a plain object");
+        if (typeof policy !== "function") throw new TypeError("[lite-form] reinitialize(next, policy) requires a function policy");
+        // PHASE 1 VALIDATE+COPY (no mutation; hostile key/cycle/uncopyable throws).
+        const nb = cloneConfig(next);
+        // PHASE 2 PRE-SCAN VERDICTS (no mutation). A throw from the policy propagates
+        // HERE, before any state change -- the merge is atomic on a throwing policy.
+        const n = fieldList.length;
+        if (verdicts === null || verdicts.length < n) verdicts = new Array(n);
+        // The latch stays up through the apply FLUSH (effects run at batch close),
+        // so caller code reached from either window cannot mutate mid-merge.
+        merging = true;
+        try {
+            for (let i = 0; i < n; i++) {
+                const fld = fieldList[i];
+                const ni = readBase(nb, fld.path, fld.segs);  // next-baseline leaf (undefined when absent)
+                if (!handle.isOverlaid(fld.path)) { verdicts[i] = ADOPT; continue; }
+                const d = handle.peek(fld.path);              // current draft
+                // FORCED ECHO: eq(ni,d) short-circuits the policy (protects clear-on-
+                // initial). FAIL CLOSED: only === true is ECHO; any other return CONFLICTs.
+                verdicts[i] = (eq(ni, d) || policy(ni, d) === true) ? ECHO : CONFLICT;
             }
-            submitAttempted.set(false);
-            submitErr.set(null);
-            bumpRev();
-            scratch = null;
-        });
+            // PHASE 3 APPLY in ONE batch. Reseed initialRef ALWAYS (every row); ADOPT/ECHO
+            // clear touched, CONFLICT leaves touched + overlay. submit state NOT written.
+            B(() => {
+                baseline = nb;
+                for (let i = 0; i < n; i++) {
+                    const fld = fieldList[i];
+                    fld.initialRef = copyLeaf(readBase(baseline, fld.path, fld.segs));
+                    const v = verdicts[i];
+                    if (v === ADOPT) { fld.touched.set(false); }
+                    else if (v === ECHO) { handle.clear(fld.path); fld.touched.set(false); }
+                    // CONFLICT: overlay left in place, touched untouched.
+                }
+                bumpRev();                                    // LAST write, exactly once
+                scratch = null;
+            });
+        } finally {
+            merging = false;
+        }
     }
 
-    async function submit(ev) {
+    // Source-mode reconciliation: drop every overlay the policy confirms against the
+    // CURRENT (untracked) source value; conflicts stay masked. Default policy is
+    // confirmOnEcho (Object.is). In DEFAULT mode this is a near-no-op: clear-on-
+    // initial means an overlay only exists when value differs from initialRef, so
+    // Object.is(initialRef, overlay) is never true and nothing is dropped (AM-7).
+    function reconcile(policy) {
+        if (merging) throwMerging();
+        if (policy !== undefined && typeof policy !== "function") {
+            throw new TypeError("[lite-form] reconcile(policy) requires a function policy");
+        }
+        handle.reconcileAll(policy || eq);
+    }
+
+    async function submit(ev, opts) {
+        if (merging) throwMerging();
         if (ev && typeof ev.preventDefault === "function") ev.preventDefault();
         submitAttempted.set(true);                        // reveals all errors
         // untrack the validity read + the userland callback so submit() can be called
         // from inside a reactive context without onSubmit's own signal reads
-        // (auth.token(), etc.) silently leaking in as dependencies.
+        // (auth.token(), etc.) silently leaking in as dependencies. isValid() is
+        // strict-false while any async lane is pending (D6), so a submit racing a
+        // pending verdict fails closed here with no extra submit code.
         if (!U(() => isValid())) return false;
         if (!onSubmit) return true;
         submitting.set(true);
         submitErr.set(null);
         try {
-            await U(() => onSubmit(values()));
+            // opts.patch posts toPatch() (dirty-only) instead of the full values().
+            await U(() => onSubmit(opts && opts.patch ? toPatch() : values()));
             return true;
         } catch (err) {
             // Structural code bugs aren't legitimate submission outcomes -- surface them
@@ -608,14 +838,27 @@ export function createForm(config = {}) {
         reset,                                            // reset() -> back to initialValues
         commit,                                           // commit(path?) -> fold dirty values into the baseline
         toPatch,                                          // toPatch() -> [{path, from, to}] for the dirty paths
-        reinitialize,                                     // reinitialize(next) -> re-seed like initialValues
-        submit,                                           // submit(ev?) -> Promise<boolean> (validates, then onSubmit)
+        reinitialize,                                     // reinitialize(next[, policy]) -> re-seed / merge
+        reconcile,                                        // reconcile(policy?) -> drop policy-confirmed overlays (source mode)
+        submit,                                           // submit(ev?, opts?) -> Promise<boolean> (validates, then onSubmit)
         isValid,                                          // isValid() -> reactive boolean (true validity)
         isDirty,                                          // isDirty() -> reactive boolean
+        isValidating,                                     // isValidating() -> reactive boolean (any async lane pending)
         isSubmitting: submitting,                         // isSubmitting() -> reactive boolean
         submitError: submitErr,                           // submitError() -> last submit throw, or null
         submitAttempted,                                  // submitAttempted() -> reactive boolean
         dispose: () => {
+            if (merging) throwMerging();
+            disposed = true;                              // FIRST: any post-dispose settlement is now a no-op
+            for (let i = 0; i < asyncLanes.length; i++) {
+                const lane = asyncLanes[i];
+                if (lane.disp) lane.disp();               // stop the settlement effect
+                // Tear down a caller-owned reader handle (e.g. a lite-debounce api,
+                // whose disposal contract is api.dispose()); the default reader is
+                // the field's own value facade and is NEVER disposed.
+                if (lane.ownReader && typeof lane.ownReader.dispose === "function") lane.ownReader.dispose();
+            }
+            asyncLanes.length = 0;
             handle.dispose();                             // recycle every projection-owned node
             for (let i = 0; i < subDisposers.length; i++) subDisposers[i]();
             subDisposers.length = 0;

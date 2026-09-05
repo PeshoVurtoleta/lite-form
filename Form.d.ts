@@ -47,6 +47,34 @@ export interface FieldContext {
 /** A validator returns a message string when invalid, or a falsy value when valid. */
 export type Validator = (value: any, ctx: FieldContext) => string | null | false | undefined | void;
 
+/**
+ * An async validator: resolves to a message string when invalid, or a falsy value
+ * when valid. Only the LATEST-seq settlement per field lands; stale ones are
+ * dropped whole. A rejection can never leave the field valid (the rejection reason
+ * is coerced to a non-empty error string).
+ */
+export type AsyncValidator = (value: any, ctx: FieldContext) => Promise<string | null | false | undefined | void>;
+
+/**
+ * Factory for a field's async TRIGGER SOURCE, invoked once at construction after
+ * the field record is assembled. Returns a reader whose value the async lane
+ * tracks -- e.g. `(field) => debounce(() => field.value(), 300)` to debounce the
+ * async validation without lite-form owning a timer. A caller-owned reader that
+ * exposes `.dispose()` (a lite-debounce api) is torn down with the form.
+ */
+export type AsyncSourceFactory = (field: Field, ctx: FieldContext) => (() => any);
+
+/**
+ * A merge policy for `reinitialize(next, policy)`: given the incoming server value
+ * and the user's current draft, return `true` to CONFIRM the edit (drop the draft,
+ * adopt the server value) or a falsy value to keep it a CONFLICT (draft masks the
+ * server value). Only a strict `=== true` confirms (fail closed). Deep-copied
+ * payloads mean an object-leaf draft is never `Object.is`-equal to the server
+ * object, so under the `Object.is` policy an object-leaf edit is always a CONFLICT;
+ * supply a structural policy to confirm it.
+ */
+export type MergePolicy = (nextValue: any, draftValue: any) => boolean;
+
 /** A form-level schema (e.g. a Zod/Yup adapter): receives all values, returns a map of path -> message. Run ONCE per change. */
 export type SchemaValidate = (values: Record<string, any>) => Record<string, string | null | false | undefined>;
 
@@ -81,6 +109,8 @@ export interface Field<T = any> {
     readonly touched: ReadSignal<boolean>;
     /** Always-live validity (ignores the reveal policy); drives `isValid`. */
     readonly rawError: ReadSignal<string | null>;
+    /** True while this field's LATEST async validation is unsettled. A field with no async validator reads a shared frozen `false`. */
+    readonly isValidating: ReadSignal<boolean>;
     set(value: T): void;
     blur(): void;
     reset(): void;
@@ -92,10 +122,17 @@ export interface FormConfig {
     validators?: Record<string, Validator>;
     /** Form-level schema, hoisted to a single computed; merges with per-field validators. */
     validate?: SchemaValidate;
+    /** Per-field async validators, keyed by path. Each adds an off-cost async lane with last-write-wins ordering and `isValidating`. Debounce via `asyncSources`. */
+    validatorsAsync?: Record<string, AsyncValidator>;
+    /** Per-field async trigger-source factories, keyed by path. Wrap a field's value in a debounce so async validation is debounced without lite-form owning a timer. */
+    asyncSources?: Record<string, AsyncSourceFactory>;
     /** Per-field parse/format, keyed by path. Config-level because fields are allocated eagerly. */
     fieldOpts?: Record<string, FieldOpt>;
     validateOn?: ValidateOn;
-    onSubmit?: (values: Record<string, any>) => void | Promise<void>;
+    /** Runs on a valid submit: receives the full `values()` snapshot, or the dirty-only `toPatch()` array when `submit(ev, { patch: true })` is used. */
+    onSubmit?:
+        | ((values: Record<string, any>) => void | Promise<void>)
+        | ((patch: FormPatch[]) => void | Promise<void>);
     /** Use a specific lite-signal registry instead of the default one. Bind with that registry's `effect`. */
     registry?: Registry;
     /**
@@ -129,14 +166,34 @@ export interface Form {
     commit(path?: string): void;
     /** List exactly the dirty paths as `[{ path, from, to }]` (`from` = baseline value, `to` = current). Untracked and read-only -- safe to call inside an effect. */
     toPatch(): FormPatch[];
-    /** Re-seed the form like `initialValues`: `next` is validated and deep-copied atomically BEFORE any state change (a hostile key, cycle, or uncopyable leaf throws a `TypeError` with nothing mutated), then every field re-captures its initial reference (a path absent from `next` re-seeds `undefined`), overlays are reverted, and touched/submit state clears. */
-    reinitialize(next: Record<string, any>): void;
-    /** Reveal errors, validate, and run `onSubmit(values())` if valid. Resolves to whether submission ran. */
-    submit(ev?: { preventDefault?: () => void }): Promise<boolean>;
-    /** True validity (independent of whether errors are shown). */
+    /**
+     * Re-seed the form. 1-arg `reinitialize(next)` re-seeds like `initialValues`
+     * and DROPS every edit: `next` is validated and deep-copied atomically BEFORE
+     * any state change (a hostile key, cycle, or uncopyable leaf throws a
+     * `TypeError` with nothing mutated), then every field re-captures its initial
+     * reference (a path absent from `next` re-seeds `undefined`), overlays are
+     * reverted, and touched/submit state clears.
+     *
+     * 2-arg `reinitialize(next, policy)` MERGES fresh server data while the user
+     * edits (default mode only; throws in source mode -- use `reconcile`): a
+     * pristine field adopts the new value; a dirty field whose edit the `policy`
+     * confirms goes pristine at the new value; a dirty field whose edit conflicts
+     * keeps the draft (masking the new value) but re-seeds the baseline underneath
+     * so `reset()`/`toPatch()` target it. Atomic: validate+copy and the verdict
+     * pre-scan run with NO mutation, so a hostile leaf or a throwing `policy`
+     * leaves the form untouched. Submit state is never written by the merge.
+     */
+    reinitialize(next: Record<string, any>, policy?: MergePolicy): void;
+    /** Source mode: drop every overlay the `policy` confirms against the current source value (default `Object.is`); conflicts stay masked. A near-no-op in default mode. */
+    reconcile(policy?: MergePolicy): void;
+    /** Reveal errors, validate, and run `onSubmit` if valid -- `onSubmit(values())`, or `onSubmit(toPatch())` when `opts.patch` is true. Resolves to whether submission ran. */
+    submit(ev?: { preventDefault?: () => void }, opts?: { patch?: boolean }): Promise<boolean>;
+    /** True validity (independent of whether errors are shown). While any async lane is pending, this is strictly `false` (fail closed). */
     readonly isValid: ReadSignal<boolean>;
     /** True if any field differs from its initial value. */
     readonly isDirty: ReadSignal<boolean>;
+    /** True while any async field's latest validation is unsettled. A form with no async validators reads a shared frozen `false`. */
+    readonly isValidating: ReadSignal<boolean>;
     /** True while an async `onSubmit` is in flight. */
     readonly isSubmitting: ReadSignal<boolean>;
     /** The last error thrown by `onSubmit`, or null. */

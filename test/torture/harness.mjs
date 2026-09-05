@@ -79,7 +79,7 @@ export const BREAK = process.env.FORM_TORTURE_BREAK || "";
  * torture entry's preflight checks README.md and llms.txt against -- a doc that
  * drifts from this number fails the gate instead of sitting silently stale.
  */
-export const FAST_SUITE_COUNT = 77;
+export const FAST_SUITE_COUNT = 118;
 
 /** Base zero-GC rules. maxArrayBuffersGrowth needs measureOps stabilize:'deep'. */
 export const RULES = { maxMajor: 0, maxPauseMs: 4, maxArrayBuffersGrowth: 0 };

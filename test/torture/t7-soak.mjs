@@ -18,7 +18,7 @@
  */
 
 import { createLeakTracker } from "@zakkster/lite-leak";
-import { BREAK, check, loadForm, withRegistry } from "./harness.mjs";
+import { BREAK, SEED, check, loadForm, makePrng, withRegistry } from "./harness.mjs";
 
 let createForm = null; // bound from loadForm() at run() entry
 
@@ -174,4 +174,94 @@ export async function run() {
     () => "t7: lazy-field leak audit reported " + tracker3.audit().length + " finding(s)");
   check(warns3.length === 0,
     () => "t7: lazy-field leak witness raised " + warns3.length + " warning(s)");
+
+  // --- witness 4: async-lane churn (R5-i) -----------------------------------
+  // 4096 cycles of: create a form with 2 async fields, fire several triggers per
+  // field, settle the parked deferreds OUT OF ORDER, dispose, then settle any
+  // leftovers post-dispose (must be no-ops -- no throw, no write). Two signals:
+  // activeNodes conservation (pool-flat) and a lite-leak tracker returning to 0.
+  const leaks4 = [];
+  const warns4 = [];
+  const tracker4 = createLeakTracker({
+    name: "t7-async",
+    onLeak: (r) => leaks4.push(r.kind),
+    onWarning: (w) => warns4.push(w.kind),
+  });
+  const prng = makePrng(SEED);
+  await withRegistry(CEIL, async (reg) => {
+    const base = reg.stats().activeNodes;
+    for (let c = 0; c < CYCLES; c++) {
+      const qa = [];
+      const qb = [];
+      const va = (v) => new Promise((res, rej) => qa.push({ res, rej }));
+      const vb = (v) => new Promise((res, rej) => qb.push({ res, rej }));
+      const form = createForm({ initialValues: { a: 0, b: 0 }, validatorsAsync: { a: va, b: vb }, registry: reg });
+      // tag primitive, cleanup null -- neither closes over the tracked target.
+      tracker4.track(form.field("a"), null, c * 2, { audit: true });
+      tracker4.track(form.field("b"), null, c * 2 + 1, { audit: true });
+      form.field("a").set(1); form.field("a").set(2); // qa[1], qa[2]
+      form.field("b").set(1); form.field("b").set(2); // qb[1], qb[2]
+      // settle a subset OUT OF ORDER before dispose; leave leftovers.
+      const pre = [qa[1], qb[2], qa[0]];
+      shufflePrng(pre, prng);
+      for (let j = 0; j < pre.length; j++) if (pre[j]) pre[j].res(null);
+      form.dispose();
+      // post-dispose leftovers: a settlement is now a complete no-op.
+      for (let j = 0; j < qa.length; j++) qa[j].res("late");
+      for (let j = 0; j < qb.length; j++) qb[j].res("late");
+      if ((c & 255) === 0) { await Promise.resolve(); await Promise.resolve(); }
+    }
+    await Promise.resolve(); await Promise.resolve();
+    const delta = reg.stats().activeNodes - base;
+    check(delta === 0, () => "t7: async-lane churn leaked " + delta + " node(s) over " + CYCLES + " cycles");
+  });
+  globalThis.gc();
+  for (let k = 0; k < 12 && tracker4.size() > 0; k++) { globalThis.gc(); await settle(); }
+  const live4 = tracker4.size();
+  check(live4 === 0, () => "t7: async-lane leak witness sees " + live4 + " retained field record(s) after dispose");
+  check(tracker4.audit().length === 0, () => "t7: async-lane leak audit reported " + tracker4.audit().length + " finding(s)");
+  check(warns4.length === 0, () => "t7: async-lane leak witness raised " + warns4.length + " warning(s)");
+
+  // --- witness 5: merge churn (R5-ii) ---------------------------------------
+  // 4096 cycles of set()s + reinitialize(next, policy) with mixed ADOPT/ECHO/
+  // CONFLICT verdicts each cycle. Leak-flat + pool-flat: the merge runs in one
+  // batch and reseeds in place, so no node leaks across cycles.
+  const leaks5 = [];
+  const warns5 = [];
+  const tracker5 = createLeakTracker({
+    name: "t7-merge",
+    onLeak: (r) => leaks5.push(r.kind),
+    onWarning: (w) => warns5.push(w.kind),
+  });
+  withRegistry(CEIL, (reg) => {
+    const base = reg.stats().activeNodes;
+    for (let c = 0; c < CYCLES; c++) {
+      const form = createForm({ initialValues: { a: 0, b: 0, d: 0 }, registry: reg });
+      tracker5.track(form.field("a"), null, c * 3, { audit: true });
+      tracker5.track(form.field("b"), null, c * 3 + 1, { audit: true });
+      tracker5.track(form.field("d"), null, c * 3 + 2, { audit: true });
+      form.field("b").set(10); // dirty, server will echo -> ECHO
+      form.field("d").set(20); // dirty, server conflicts -> CONFLICT
+      // a: pristine -> ADOPT; b: next 10 === draft 10 -> ECHO; d: next 99 != 20 -> CONFLICT.
+      form.reinitialize({ a: c + 1, b: 10, d: 99 }, () => false);
+      form.dispose();
+    }
+    const delta = reg.stats().activeNodes - base;
+    check(delta === 0, () => "t7: merge churn leaked " + delta + " node(s) over " + CYCLES + " cycles");
+  });
+  globalThis.gc();
+  for (let k = 0; k < 12 && tracker5.size() > 0; k++) { globalThis.gc(); await settle(); }
+  const live5 = tracker5.size();
+  check(live5 === 0, () => "t7: merge-churn leak witness sees " + live5 + " retained field record(s) after dispose");
+  check(tracker5.audit().length === 0, () => "t7: merge-churn leak audit reported " + tracker5.audit().length + " finding(s)");
+  check(warns5.length === 0, () => "t7: merge-churn leak witness raised " + warns5.length + " warning(s)");
+}
+
+// Seeded Fisher-Yates shuffle used by witness 4's out-of-order settlement.
+function shufflePrng(arr, prng) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = prng() % (i + 1);
+    const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+  }
+  return arr;
 }

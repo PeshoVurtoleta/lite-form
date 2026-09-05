@@ -129,7 +129,28 @@ export async function run() {
     form.dispose();
   });
 
-  process.stderr.write("t6 LF-06 baseline dotted=" + dotted.toFixed(3) + " B/op schema=" + schema.toFixed(3) + " B/op\n");
+  // --- window (d): ASYNC-VALIDATED KEYSTROKE (recorded, NOT gated) -----------
+  // The Promise machinery an async lane rides is inherent, so this is a recorded
+  // baseline, never a gate (the debounce recipe is the documented mitigation, not
+  // a waiver on the sync path). The MEASURED window contains ONLY the trigger and
+  // promise creation: fv.set(i) reruns the lane effect, which bumps the monotone
+  // seq and calls the async validator (one parked, never-resolving Promise per op)
+  // then attaches the settlement .then. NO settlement runs inside the window --
+  // the validator's promise is deliberately never resolved, so the last-write-wins
+  // settlement cost is OUTSIDE the measurement. Op count is small so the parked
+  // promises stay inside the initial semispace (no scavenge voids the reading).
+  let asyncKs = 0;
+  withRegistry(CFG, (reg) => {
+    const initialValues = { g0: 0 };
+    const validatorsAsync = { g0: () => new Promise(() => {}) }; // parks forever: no settlement
+    const form = createForm({ initialValues, validatorsAsync, registry: reg });
+    const fv = form.field("g0").value;
+    const asyncHot = (i) => { fv.set(i & 1023); };
+    asyncKs = allocTotal(asyncHot, 512, 64) / 512;
+    form.dispose();
+  });
+
+  process.stderr.write("t6 LF-06 baseline dotted=" + dotted.toFixed(3) + " B/op schema=" + schema.toFixed(3) + " B/op asyncKeystroke=" + asyncKs.toFixed(3) + " B/op\n");
 
   // Generous sanity ceilings -- these are RECORDED baselines, not budgets. The
   // real numbers land in the report; only an order-of-magnitude regression dies.
