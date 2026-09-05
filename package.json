@@ -1,6 +1,6 @@
 {
   "name": "@zakkster/lite-form",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Headless reactive forms for @zakkster/lite-signal. One validator per keystroke, hoisted schema (Zod/Yup), ~1.5M keystrokes/sec on a 100-field form — 8× faster than the hand-written pattern. No DOM, no VDOM, no compiler.",
   "keywords": [
     "form",
@@ -52,6 +52,7 @@
     "Form.d.ts",
     "README.md",
     "llms.txt",
+    "CHANGELOG.md",
     "LICENSE.txt"
   ],
   "peerDependencies": {

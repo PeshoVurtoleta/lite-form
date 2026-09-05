@@ -19,6 +19,8 @@ Peer dependency: `@zakkster/lite-signal ^1.1.3`.
 
 ## Exports
 
+`createForm` and `VERSION` (the package version string).
+
 ### `createForm(config?) → Form`
 
 Build a reactive form. Eagerly allocates one signal + per-field computeds for
@@ -126,6 +128,10 @@ regardless of mode. `reset()` clears it again.
   stays untouched.
 - **`dispose()` is idempotent and complete.** All owned signals/computeds are
   freed; field map cleared. Calling twice is a no-op.
+- **Hostile path segments are rejected (v1.0.1).** `__proto__`, `constructor`,
+  and `prototype` are forbidden as path segments everywhere a path enters the
+  form (`createForm` config keys, `field()`, `setValues()`, validator
+  `ctx.get`). They throw a `TypeError`; nothing is written, nothing is cached.
 - **`submit()` is NOT internally deduped.** Two concurrent `submit()` calls
   fire `onSubmit` twice, both racing on the same `values()` snapshot. Guard
   via `isSubmitting` (UI), `@zakkster/lite-throttle` (hotkeys/programmatic),

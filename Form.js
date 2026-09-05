@@ -1,5 +1,6 @@
 /**
  * @zakkster/lite-form · headless reactive forms for @zakkster/lite-signal
+ * v1.0.1
  * ─────────────────────────────────────────────────────────────────────────────
  * Form STATE as fine-grained signals. No DOM, no virtual DOM, no compiler — bind
  * the field signals with @zakkster/lite-signal-dom (or anything). The only hard
@@ -39,23 +40,52 @@ import {
     signal as dSignal, computed as dComputed, batch as dBatch, untrack as dUntrack, dispose as dDispose,
 } from "@zakkster/lite-signal";
 
+export const VERSION = "1.0.1";
+
 const NULL = () => null;                                  // shared "no validator" error source
 const EMPTY = {};                                         // shared empty errors / opts
 const normErr = (e) => (e ? e : null);                    // falsy (undefined/false/"") → null
 const eq = Object.is;
 const isPlainObj = (v) => v != null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date);
 
+// Prototype-chain segments are rejected wherever a path enters the form: a
+// "__proto__" walk in setPath lands on Object.prototype (global pollution).
+// Throw, not sanitize -- a silently dropped segment is silent data loss.
+const hostileSeg = (k) => k === "__proto__" || k === "constructor" || k === "prototype";
+const throwHostile = (k, path) => {
+    throw new TypeError('[lite-form] hostile path segment "' + k + '" in "' + path + '"');
+};
+
+function guardPath(path) {
+    if (path.indexOf(".") < 0) {
+        if (hostileSeg(path)) throwHostile(path, path);
+        return path;
+    }
+    const keys = path.split(".");
+    for (let i = 0; i < keys.length; i++) {
+        if (hostileSeg(keys[i])) throwHostile(keys[i], path);
+    }
+    return path;
+}
+
 function getPath(obj, path) {
     if (obj == null) return undefined;
-    if (path.indexOf(".") < 0) return obj[path];
+    if (path.indexOf(".") < 0) {
+        if (hostileSeg(path)) throwHostile(path, path);
+        return obj[path];
+    }
     let o = obj;
     const keys = path.split(".");
-    for (let i = 0; i < keys.length && o != null; i++) o = o[keys[i]];
+    for (let i = 0; i < keys.length && o != null; i++) {
+        if (hostileSeg(keys[i])) throwHostile(keys[i], path);
+        o = o[keys[i]];
+    }
     return o;
 }
 
 function setPath(obj, path, val) {
     if (path.indexOf(".") < 0) {
+        if (hostileSeg(path)) throwHostile(path, path);
         obj[path] = val;
         return;
     }
@@ -63,6 +93,7 @@ function setPath(obj, path, val) {
     let o = obj;
     for (let i = 0; i < keys.length - 1; i++) {
         const k = keys[i];
+        if (hostileSeg(k)) throwHostile(k, path);
         // Keep existing objects AND arrays while descending; only materialize a missing
         // container, choosing an array when the next key is a numeric index.
         if (!(isPlainObj(o[k]) || Array.isArray(o[k]))) {
@@ -70,7 +101,9 @@ function setPath(obj, path, val) {
         }
         o = o[k];
     }
-    o[keys[keys.length - 1]] = val;
+    const last = keys[keys.length - 1];
+    if (hostileSeg(last)) throwHostile(last, path);
+    o[last] = val;
 }
 
 function leafPaths(obj, prefix, out) {                    // flatten initialValues to dotted leaf paths
@@ -149,6 +182,7 @@ export function createForm(config = {}) {
     const formErrors = validate ? cmp(() => validate(readValues()) || EMPTY) : null;
 
     function makeField(path) {
+        guardPath(path);                                  // sole fields.set site: no hostile path is ever cached
         const initial = getPath(initialValues, path);
         const value = sig(initial);
         const touched = sig(false);

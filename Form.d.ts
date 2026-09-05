@@ -116,3 +116,6 @@ export interface Form {
 }
 
 export function createForm(config?: FormConfig): Form;
+
+/** Package version, kept in sync with package.json. */
+export const VERSION: string;
