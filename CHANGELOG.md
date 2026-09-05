@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 - 2026-09-05
 
 Fail-closed hardening (S1). The keystroke path is untouched -- every new check
 lives at the construction and snapshot boundaries, not in `set`/`dirty`/`error`.
@@ -39,6 +39,9 @@ lives at the construction and snapshot boundaries, not in `set`/`dirty`/`error`.
 ### Added
 - t6 dotted keystroke gate: a 3-segment dotted keystroke is now a hard
   transient-garbage gate (<= 16384 B / 50,000 ops), not a recorded baseline.
+  Measured 0.057 B/op (2,850 B total / 50,000 ops; the 1.0.2 baseline was
+  32.150 B/op). Schema-mode baseline re-recorded with `structuredClone` gone:
+  27,181.120 -> ~20,990 B/op, sanity ceiling re-pinned 65,536 -> 32,768.
 - t7 lazy-field churn witness.
 - t9 realias / reproto patched-module controls (a reintroduced S1 bug in a
   patched Form.js copy must die at t1).

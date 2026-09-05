@@ -1,6 +1,6 @@
 /**
  * @zakkster/lite-form -- headless reactive forms for @zakkster/lite-signal
- * v1.0.2
+ * v1.1.0
  * -----------------------------------------------------------------------------
  * Form STATE as fine-grained signals. No DOM, no virtual DOM, no compiler -- bind
  * the field signals with @zakkster/lite-signal-dom (or anything). The only hard
@@ -59,7 +59,7 @@ import {
     isTracking as dIsTracking, createRoot as dCreateRoot,
 } from "@zakkster/lite-signal";
 
-export const VERSION = "1.0.2";
+export const VERSION = "1.1.0";
 
 const NULL = () => null;                                  // shared "no validator" error source
 const EMPTY = {};                                         // shared empty errors / opts
