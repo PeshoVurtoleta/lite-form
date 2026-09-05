@@ -1,11 +1,23 @@
 # Changelog
 
-## Unreleased
+## 1.0.2 - 2026-09-05
+
+Gate and hygiene (S0). No behaviour change.
 
 ### Added
 - Torture gate: `test/torture.mjs` entry + 7 tiers (t0 laws, t1 degenerate,
   t2 scale, t5 fuzz, t6 alloc, t7 soak, t9 controls) + 4 spawned controls
-  (grow/alloc/drop/leak).
+  (grow/alloc/drop/leak). Preflights fail closed (exit 2) on a missing
+  witness devDependency, three-place VERSION drift, or a doc test-count that
+  disagrees with the recorded 41.
+- Transient-allocation witness: V8 new-space used-bytes delta around the
+  measured loop (GC-observer rules and stabilized `bytesPerOp` cannot see
+  transient garbage in a synchronous window). Flat per-field keystroke gated
+  at <= 16384 B total per 50,000 ops; measured 4,720 B (0 B/op). Recorded
+  LF-06 baselines: dotted path 32.150 B/op, schema mode 27,181.120 B/op.
+- t1 registers LF-02 (leaf aliasing), LF-03 (non-cloneable crash), LF-04
+  (zombie lazy fields) as reproduced-failing; fixing any of them without
+  flipping its check fails the gate.
 - devDependencies `@zakkster/lite-leak` and `@zakkster/lite-gc-profiler`.
 - Scripts `torture`, `verify`, `prepublishOnly`.
 - README Testing section and development/wiring notes (symlink the peers, run
