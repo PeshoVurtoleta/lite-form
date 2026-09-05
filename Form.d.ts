@@ -26,6 +26,16 @@ export interface Registry {
     computed: <T>(fn: () => T) => ReadSignal<T>;
     batch: <T>(fn: () => T) => T;
     dispose: (handle: unknown) => void;
+    /** Detached ownership scope for lazy field allocation and subscribe() effects (lite-signal 1.5.0+). */
+    createRoot?: <T>(fn: () => T) => T;
+    /** Untracked read scope. */
+    untrack?: <T>(fn: () => T) => T;
+    /** Effect factory (drives field.value.subscribe). */
+    effect?: (fn: () => void) => () => void;
+    /** True iff a read right now would record a dependency (lazy-field detachment). */
+    isTracking?: () => boolean;
+    /** Live-observer probe (optional; enables projection slot pruning). */
+    hasObservers?: (handle: unknown) => boolean;
 }
 
 /** Context handed to every validator for cross-field reads (tracked). */
@@ -88,6 +98,22 @@ export interface FormConfig {
     onSubmit?: (values: Record<string, any>) => void | Promise<void>;
     /** Use a specific lite-signal registry instead of the default one. Bind with that registry's `effect`. */
     registry?: Registry;
+    /**
+     * Engine mode: overlay drafts over a LIVE keyed source (e.g. a lite-store
+     * proxy) instead of the detached baseline. In source mode `field.dirty` is
+     * overlay presence -- an authoritative write to an un-overlaid field changes
+     * the value but is NOT an edit; a write under an overlaid field stays masked.
+     * `commit()` writes drafts through to the source. Must share the source's
+     * lite-signal registry (typically the default one).
+     */
+    source?: Record<PropertyKey, any>;
+}
+
+/** One dirty path as a patch entry: `from` = baseline value, `to` = current value. */
+export interface FormPatch {
+    path: string;
+    from: any;
+    to: any;
 }
 
 export interface Form {
@@ -99,6 +125,12 @@ export interface Form {
     setValues(patch: Record<string, any>): void;
     /** Restore all fields to their initial values and clear touched/submit state. */
     reset(): void;
+    /** Fold dirty values into the baseline (committed values are deep-copied through the whitelist), leaving every field pristine and `reset()` targeting the committed state. With `path`, commits just that field. A set-back-to-initial field is not written. @throws {TypeError} for a `path` no field was ever created for -- a typo'd commit is loud, never a lazy field creation. */
+    commit(path?: string): void;
+    /** List exactly the dirty paths as `[{ path, from, to }]` (`from` = baseline value, `to` = current). Untracked and read-only -- safe to call inside an effect. */
+    toPatch(): FormPatch[];
+    /** Re-seed the form like `initialValues`: `next` is validated and deep-copied atomically BEFORE any state change (a hostile key, cycle, or uncopyable leaf throws a `TypeError` with nothing mutated), then every field re-captures its initial reference (a path absent from `next` re-seeds `undefined`), overlays are reverted, and touched/submit state clears. */
+    reinitialize(next: Record<string, any>): void;
     /** Reveal errors, validate, and run `onSubmit(values())` if valid. Resolves to whether submission ran. */
     submit(ev?: { preventDefault?: () => void }): Promise<boolean>;
     /** True validity (independent of whether errors are shown). */

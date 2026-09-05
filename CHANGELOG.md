@@ -1,5 +1,59 @@
 # Changelog
 
+## Unreleased
+
+Engine swap (S2). The value core now rides a `@zakkster/lite-project` projection
+over the S1 detached baseline. The public API is frozen: every S1 contract
+survives verbatim (baseline unreachable, `dirty = !Object.is(value(),
+initialRef)`, construction whitelist/cycle/hostile `TypeError`s, copying
+snapshot + path-naming `TypeError`). Validation, reveal gating, and submit are
+unchanged lite-form code.
+
+### Added
+- `form.commit(path?)` -- fold the dirty values into the baseline (all fields,
+  or one path). Every committed field is pristine afterwards and `reset()`
+  targets the committed state; committed values are deep-copied through the
+  construction whitelist. An unregistered `path` throws a path-naming
+  `TypeError` -- a typo'd commit is loud, never a lazy field creation.
+- `form.toPatch() -> [{path, from, to}]` -- exactly the dirty paths (`from` =
+  baseline value, `to` = current). A field set back to its initial reference is
+  excluded. Untracked and read-only, safe inside an effect.
+- `form.reinitialize(next)` -- re-seed from `next` exactly like `createForm`
+  `initialValues` (deep-copied + whitelist-validated BEFORE any state changes --
+  atomic `TypeError` on bad input). Every edit is dropped, paths absent from
+  `next` re-seed `undefined`, and touched/submit state is cleared.
+- `createForm({ source })` -- ENGINE mode: project a live keyed source (e.g. a
+  lite-store proxy) instead of the detached baseline. Edits stage as overlays
+  (source untouched); `commit()` writes through. In this mode `dirty` is overlay
+  presence -- an authoritative source write under an un-overlaid field is not an
+  edit and never flips dirty; a conflicting write under an overlaid field stays
+  masked.
+- t5 fuzz extended to `commit`/`toPatch`/`reinitialize` against the mirror.
+- t7 commit/revert churn witness.
+- t6 schema-mode keystroke re-recorded (see Changed).
+
+### Changed
+- Value core rebuilt on the `@zakkster/lite-project` projection: default mode is
+  `fromAccessors` over per-field seed copies + a `baselineRev` signal; the engine
+  owns a per-key overlay signal + a projected computed, slot warmed at field
+  creation. API frozen; all 53 prior tests green unmodified; 24 new tests bring
+  the suite to 77.
+- Schema mode stopped cloning per keystroke: the internal materialization for
+  `validate()` reuses a per-form scratch tree (leaves written in place, object
+  leaves by reference), rebuilt only on `reinitialize`/`commit`. Contract: the
+  object handed to schema `validate()` is form-owned and transient -- retaining
+  or mutating it is undefined behaviour. Public `values()` still returns a fresh
+  deep copy every call. Schema-mode keystroke 27,181 -> 20,990 (1.1.0) ->
+  113.440 B/op measured; dotted keystroke 0.112 B/op still gated.
+- Dirty/overlay unification: `field.set(v)` with `Object.is(v, seed)` clears the
+  overlay instead of staging it, so "overlaid" coincides with "dirty" and
+  `form.isDirty` rides the engine's tracked `dirtyCount()`.
+- Peer `@zakkster/lite-project` `^1.4.1` added (two peers now, alongside
+  `@zakkster/lite-signal`). 1.4.0 was falsified by lite-form's t6 (a ~40 B/op
+  hot-path context allocation inside the engine's `get`/`peek`/`set`, invisible
+  to its own pool-census gate) and fixed upstream as 1.4.1 with the transient
+  witness ported. See `decisions/0002-engine.md`.
+
 ## 1.1.0 - 2026-09-05
 
 Fail-closed hardening (S1). The keystroke path is untouched -- every new check

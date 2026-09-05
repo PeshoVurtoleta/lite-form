@@ -45,7 +45,7 @@ async function main() {
   }
 
   // --- preflight: witness peers must be installed before any tier imports ----
-  for (const pkg of ["@zakkster/lite-gc-profiler", "@zakkster/lite-leak"]) {
+  for (const pkg of ["@zakkster/lite-gc-profiler", "@zakkster/lite-leak", "@zakkster/lite-project"]) {
     try {
       await import(pkg);
     } catch {

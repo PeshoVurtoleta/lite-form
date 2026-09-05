@@ -260,7 +260,7 @@ DONE WHEN
 ---
 package: "@zakkster/lite-form"
 version_target: 1.1.0
-status: planned
+status: shipped (2026-09-05 -- fail-closed hardening shipped as v1.1.0; all four findings closed, t1 enforced, dotted keystroke gated at 0.057 B/op)
 findings: [LF-01, LF-02, LF-03, LF-04]
 depends_on: [S0]
 blocks: [S2]

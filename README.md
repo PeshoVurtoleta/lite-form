@@ -58,6 +58,7 @@ form. Pool returns to baseline (`stats().activeNodes === 0`).
 - [Submit lifecycle](#submit-lifecycle)
 - [API reference](#api-reference)
 - [Benchmarks](#benchmarks)
+- [The engine](#the-engine)
 - [Edge cases pinned down](#edge-cases-pinned-down)
 - [What this is **not**](#what-this-is-not)
 - [Browser / runtime support](#browser--runtime-support)
@@ -85,7 +86,7 @@ A small set of design constraints picked deliberately:
   -- drives a submit button correctly from the first render. A field's
   `error()` is reveal-gated (`change` / `blur` / `submit`), so a pristine form
   doesn't scream "required" at the user before they've touched anything.
-- **No DOM. No renderer.** lite-form ships ~461 lines of pure state. Bind it
+- **No DOM. No renderer.** lite-form ships ~621 lines of pure state. Bind it
   with `@zakkster/lite-signal-dom`, `@zakkster/lite-element`, hand-written
   `addEventListener`, or whatever you want. Forms are state, not components.
 - **Pool-clean teardown.** `form.dispose()` frees every signal and computed.
@@ -94,7 +95,8 @@ A small set of design constraints picked deliberately:
 
 If you want a `<Form>` component, a renderer, a CSS framework, a server adapter,
 or a 12-step wizard runtime -- this is the wrong library. One factory function,
-one peer dep, ~4.6 KB minified.
+two peer deps (lite-signal always; lite-project only when you opt into engine
+mode), ~6.4 KB minified.
 
 ---
 
@@ -438,6 +440,15 @@ document; that's where throttle wins.
 | `validateOn`    | `"change" \| "blur" \| "submit"`                    | `"change"`       |
 | `onSubmit`      | `(values) => void \| Promise<void>`                 | --                |
 | `registry`      | `createRegistry()` handle                           | default registry |
+| `source`        | live keyed source (e.g. a lite-store proxy)         | --                |
+
+Passing `source` selects **engine mode**: the value core projects the live
+source instead of the detached baseline. Edits stage as overlays (the source is
+never written by an edit); `commit()` writes through. In this mode `dirty` is
+overlay presence -- an authoritative source write under an un-overlaid field is
+not an edit and never flips dirty; a conflicting write under an overlaid field
+stays masked. Without `source`, the form uses the default detached baseline and
+lite-project is not loaded.
 
 ### `form.field(path) -> Field`
 
@@ -469,6 +480,9 @@ lazily on first access.
 | `values()`         | `() => object`                      | untracked snapshot                             |
 | `setValues(patch)` | `(object) => void`                  | batched multi-set                              |
 | `reset()`          | `() => void`                        | restore initial, clear touched + submit state  |
+| `commit(path?)`    | `(path?) => void`                   | fold dirty values into the baseline (all, or one path); committed fields go pristine, `reset()` now targets the committed state; values deep-copied through the whitelist; an unregistered `path` throws a `TypeError` (loud, never a lazy field creation) |
+| `toPatch()`        | `() => Array<{path, from, to}>`     | exactly the dirty paths (`from` = baseline, `to` = current); a field set back to its initial ref is excluded; untracked + read-only, safe in an effect |
+| `reinitialize(next)`| `(next) => void`                   | re-seed like `initialValues` (deep-copied + whitelist-validated BEFORE any state change -- atomic `TypeError` on bad input); drops every edit, paths absent from `next` re-seed `undefined`, clears touched + submit state |
 | `submit(ev?)`      | `(ev?) => Promise<boolean>`         | true if `onSubmit` ran without throwing        |
 | `isValid`          | `ReadSignal<boolean>`               | always live                                    |
 | `isDirty`          | `ReadSignal<boolean>`               |                                                |
@@ -512,9 +526,74 @@ Measured on Node 22.22 with `--expose-gc`. Run yourself: `npm run bench`.
 
 ---
 
+## The engine
+
+As of v1.2.0 the value core rides a `@zakkster/lite-project` projection over the
+S1 detached baseline. The default mode is a `fromAccessors` projection over
+per-field seed copies plus a `baselineRev` signal; the engine owns a per-key
+overlay signal and a projected computed, with the slot warmed at field creation.
+Validation, reveal gating, and submit stay lite-form's own code -- the swap is
+confined to how a field's value is stored and read.
+
+**The unification trick.** `field.set(v)` compares `Object.is(v, seed)`; on
+equality it *clears* the overlay instead of staging it. So "overlaid" coincides
+exactly with "dirty", and `form.isDirty` rides the engine's tracked
+`dirtyCount()` rather than a separate walk.
+
+**The scratch-tree contract.** Schema mode no longer clones the value tree per
+keystroke. The internal materialization handed to `validate()` reuses a per-form
+scratch tree -- leaves written in place, object leaves shared by reference --
+rebuilt only on `reinitialize`/`commit`. The object passed to schema
+`validate()` is therefore **form-owned and transient: retaining or mutating it
+is undefined behaviour.** Public `values()` is unaffected -- it still returns a
+fresh deep copy every call.
+
+Every S1 contract survives verbatim: the baseline stays unreachable
+(`source.get` returns the field's seed copy, never a baseline reference; commit
+deep-copies in), `dirty = !Object.is(value(), initialRef)`, the construction
+whitelist / cycle / hostile-segment `TypeError`s, and the copying snapshot with
+its path-naming `TypeError`.
+
+**commit + toPatch round-trip.** The new methods give you an explicit
+edit/baseline boundary -- diff the pending edits, ship them, then fold them in:
+
+```js
+const form = createForm({ initialValues: { name: "Ann", role: "dev" } });
+
+form.field("name").set("Bob");
+form.isDirty();        // true
+form.toPatch();        // [{ path: "name", from: "Ann", to: "Bob" }]
+
+await save(form.toPatch());   // ship exactly the dirty paths
+form.commit();                // fold edits into the baseline
+
+form.isDirty();        // false -- every field pristine again
+form.field("name").reset();   // stays "Bob" -- reset() targets the committed state
+```
+
+Allocation, measured on Node 26 (`node --expose-gc --preserve-symlinks
+test/torture.mjs`):
+
+| keystroke path         | B/op       | gate                                 |
+|------------------------|-----------:|--------------------------------------|
+| flat, per-field        | ~0 (noise) | gated                                |
+| dotted, 3-segment      | 0.112      | GATED (<= 16384 B / 50K ops)         |
+| schema mode            | 113.440    | recorded baseline (was 20,990 in 1.1.0; ceiling 32768 B/op) |
+
+The schema-mode figure is a 185x fall from 1.1.0's 20,990 B/op -- the scratch
+tree replaced a full per-keystroke clone.
+
+> `@zakkster/lite-project` 1.4.0 was falsified by lite-form's t6: a ~40 B/op
+> hot-path context allocation inside the engine's `get`/`peek`/`set`, invisible
+> to lite-project's own pool-census gate. It was fixed upstream as 1.4.1 with the
+> transient witness ported. See [`decisions/0002-engine.md`](./decisions/0002-engine.md)
+> for the full record. Hence the peer floor `@zakkster/lite-project ^1.4.1`.
+
+---
+
 ## Testing
 
-lite-form ships **53 deterministic tests** (`node:test`, zero runtime deps):
+lite-form ships **77 deterministic tests** (`node:test`, zero runtime deps):
 
 ```sh
 npm test          # the fast suite
@@ -532,6 +611,8 @@ symlinks so the gate measures the real, single lite-signal instance:
 
 ```sh
 ln -s ../../../LiteSignal      node_modules/@zakkster/lite-signal
+ln -s ../../../LiteProject     node_modules/@zakkster/lite-project
+ln -s ../../../LiteStore       node_modules/@zakkster/lite-store
 ln -s ../../../LiteLeak        node_modules/@zakkster/lite-leak
 ln -s ../../../LiteGCProfiler  node_modules/@zakkster/lite-gc-profiler
 ```
@@ -615,10 +696,16 @@ ESM only. No CJS build. If you need CJS, bundle through esbuild/rollup.
 ## Peer dependency
 
 ```json
-"peerDependencies": { "@zakkster/lite-signal": "^1.5.0" }
+"peerDependencies": {
+    "@zakkster/lite-signal": "^1.5.0",
+    "@zakkster/lite-project": "^1.4.1"
+}
 ```
 
-That's it. lite-form is ~461 lines on top of lite-signal's primitives.
+`@zakkster/lite-signal` is always required. `@zakkster/lite-project` (~7 KB
+minified, 958 lines) is the projection engine the value core rides; it is only
+loaded when you opt into engine mode via `createForm({ source })`. That's it for
+the default mode. lite-form is ~621 lines on top of lite-signal's primitives.
 
 ---
 
@@ -702,6 +789,7 @@ MIT (c) Zahary Shinikchiev
 #### The @zakkster stack
 
 - [@zakkster/lite-signal](https://www.npmjs.com/package/@zakkster/lite-signal) -- the reactive primitives this all builds on
+- [@zakkster/lite-project](https://www.npmjs.com/package/@zakkster/lite-project) -- the projection engine the value core rides in engine mode
 - [@zakkster/lite-element](https://www.npmjs.com/package/@zakkster/lite-element) -- Custom Elements with state that survives reparents
 - [@zakkster/lite-time](https://www.npmjs.com/package/@zakkster/lite-time) -- drift-corrected wall-clock cadence
 - **@zakkster/lite-form** -- *this package*

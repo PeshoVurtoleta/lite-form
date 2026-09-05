@@ -67,6 +67,30 @@ export async function run() {
     check(delta === 0, () => "t7: activeNodes leaked " + delta + " node(s) over " + CYCLES + " cycles");
   });
 
+  // --- witness 1b: commit/revert churn reuses pooled nodes ------------------
+  // Warmed keys, then a create->touch->overlay->commit->overlay->revert cycle
+  // repeated hard. The engine reuses pooled overlay/projected nodes, so on a
+  // pre-grown fixed-ceiling registry the pool must not grow and no node leaks.
+  withRegistry(CEIL, (reg) => {
+    const initialValues = {};
+    for (let i = 0; i < 16; i++) initialValues["f" + i] = 0;
+    const form = createForm({ initialValues, registry: reg });
+    for (let i = 0; i < 16; i++) void form.field("f" + i).value(); // warm every key
+    const g0 = reg.stats().poolGrowths;
+    const a0 = reg.stats().activeNodes;
+    for (let c = 0; c < 2000; c++) {
+      for (let i = 0; i < 16; i++) form.field("f" + i).set(c + i + 1);
+      form.commit();
+      for (let i = 0; i < 16; i++) form.field("f" + i).set(-c - i - 1);
+      form.reset();
+    }
+    const dg = reg.stats().poolGrowths - g0;
+    check(dg === 0, () => "t7: commit/revert churn grew the pool " + dg + " chunk(s) on warmed keys");
+    const da = reg.stats().activeNodes - a0;
+    check(da === 0, () => "t7: commit/revert churn leaked " + da + " node(s) on warmed keys");
+    form.dispose();
+  });
+
   // --- witness 2: lite-leak retention witness -------------------------------
   const leaks = [];
   const warns = [];

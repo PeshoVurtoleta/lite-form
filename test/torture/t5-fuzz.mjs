@@ -15,7 +15,8 @@ import { BREAK, SEED, check, deepEqual, die, loadForm, makePrng } from "./harnes
 const SEEDS = 4;
 const STEPS = 800;
 const PATHS = ["a", "b", "c", "d", "e", "f", "p.x", "q.y", "r.z"];
-const OP_NAMES = ["set", "blur", "reset", "setValues", "submit"];
+const OP_NAMES = ["set", "blur", "reset", "setValues", "submit", "commit", "reinitialize"];
+const OP_COUNT = OP_NAMES.length;
 
 const normErr = (e) => (e ? e : null);
 
@@ -73,9 +74,16 @@ export async function run() {
       for (let j = 0; j < VALIDATOR_PATHS.length; j++) if (verdicts[VALIDATOR_PATHS[j]] != null) return false;
       return true;
     };
+    // The engine's dirty set (overlay presence) is exactly the paths whose current
+    // value differs from the committed baseline. toPatch() lists precisely these.
+    const mirrorPatchPaths = () => {
+      const out = [];
+      for (let j = 0; j < PATHS.length; j++) if (vals[PATHS[j]] !== baseline[PATHS[j]]) out.push(PATHS[j]);
+      return out.sort();
+    };
 
     for (let i = 0; i < STEPS; i++) {
-      const op = prng() % 5;
+      const op = prng() % OP_COUNT;
       if (op === 0) { // set
         const path = PATHS[prng() % PATHS.length];
         const value = prng();
@@ -84,7 +92,7 @@ export async function run() {
         if (!drop) recompute(path); // "drop" leaves the cached verdict stale
       } else if (op === 1) { // blur (no value change)
         form.field(PATHS[prng() % PATHS.length]).blur();
-      } else if (op === 2) { // reset
+      } else if (op === 2) { // reset (revert overlays + re-seed)
         form.reset();
         for (let j = 0; j < PATHS.length; j++) vals[PATHS[j]] = baseline[PATHS[j]];
         for (let j = 0; j < VALIDATOR_PATHS.length; j++) recompute(VALIDATOR_PATHS[j]);
@@ -99,8 +107,17 @@ export async function run() {
         form.setValues(patch);
         vals[p1] = v1; recompute(p1);
         vals[p2] = v2; recompute(p2);
-      } else { // submit (no onSubmit): validates, changes no values
+      } else if (op === 4) { // submit (no onSubmit): validates, changes no values
         await form.submit();
+      } else if (op === 5) { // commit: fold overlays into the baseline, clear them
+        form.commit();
+        for (let j = 0; j < PATHS.length; j++) baseline[PATHS[j]] = vals[PATHS[j]];
+      } else { // reinitialize: replace baseline, drop overlays, re-seed
+        const r = prng();
+        const next = { a: r, b: r, c: r, d: r, e: r, f: r, p: { x: r }, q: { y: r }, r: { z: r } };
+        form.reinitialize(next);
+        for (let j = 0; j < PATHS.length; j++) { vals[PATHS[j]] = r; baseline[PATHS[j]] = r; }
+        for (let j = 0; j < VALIDATOR_PATHS.length; j++) recompute(VALIDATOR_PATHS[j]);
       }
 
       const opName = OP_NAMES[op];
@@ -111,6 +128,9 @@ export async function run() {
         () => "t5: oracle diverged -- seed " + seed + " step " + i + " op " + opName + " (isDirty)");
       check(form.isValid() === mirrorValid(),
         () => "t5: oracle diverged -- seed " + seed + " step " + i + " op " + opName + " (isValid)");
+      if (!deepEqual(form.toPatch().map((p) => p.path).sort(), mirrorPatchPaths())) {
+        die("t5: oracle diverged -- seed " + seed + " step " + i + " op " + opName + " (toPatch paths)");
+      }
     }
 
     form.dispose();

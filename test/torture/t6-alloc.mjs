@@ -120,10 +120,11 @@ export async function run() {
     const f = form.field("f7");
     const fv = f.value;
     const schemaHot = (i) => { fv.set(i & 1023); void form.isValid(); };
-    // 50 ops, not thousands: the schema keystroke legally allocates ~27 KB/op
-    // (snapshot clone + formErrors recompute), and the window must stay inside
-    // the initial semispace (~2 MB) so no scavenge lands mid-window -- that is
-    // what keeps this recorded baseline byte-stable run to run.
+    // 50 ops, not thousands: since S2 the scratch tree is reused IN PLACE (no
+    // per-keystroke clone), so the schema keystroke now allocates only what
+    // validate() itself returns per run -- a recorded baseline, not zero. The
+    // window must stay inside the initial semispace (~2 MB) so no scavenge lands
+    // mid-window, which is what keeps this baseline byte-stable run to run.
     schema = allocTotal(schemaHot, 50, 200) / 50;
     form.dispose();
   });

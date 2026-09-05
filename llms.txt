@@ -6,8 +6,10 @@ in one field of a 100-field form runs exactly one validator. A form-level
 schema (Zod/Yup-shaped) is hoisted into a single computed that runs once per
 keystroke, not once per field.
 
-ESM-only. Node >= 18. Single file `Form.js`, 461 lines, ~4.6 KB minified.
-Peer dependency: `@zakkster/lite-signal ^1.5.0`.
+ESM-only. Node >= 18. Single file `Form.js`, 621 lines, ~6.4 KB minified.
+Peer dependencies: `@zakkster/lite-signal ^1.5.0` (always) and
+`@zakkster/lite-project ^1.4.1` (the projection engine the value core rides;
+loaded only in engine mode via `createForm({ source })`).
 
 ## Install
 
@@ -43,6 +45,12 @@ Config (all optional):
   valid. Called untracked (its signal reads don't leak into the caller).
 - `registry: createRegistry() handle` -- scope every signal/computed to this
   registry instead of the default. Bind with that registry's `effect`.
+- `source: live keyed source` -- ENGINE mode. Project a live keyed source (e.g.
+  a lite-store proxy) instead of the detached baseline. Edits stage as overlays
+  (source untouched); `commit()` writes through. `dirty` = overlay presence: an
+  authoritative source write under an un-overlaid field never flips dirty; a
+  conflicting write under an overlaid field stays masked. Requires the
+  `@zakkster/lite-project ^1.4.1` peer.
 
 ## Field interface (`form.field(path)`)
 
@@ -69,6 +77,9 @@ paths; created lazily on first `.field(path)` for undeclared paths.
     form.values()               // untracked snapshot; own-walk materialization, each leaf deep-copied; uncopyable runtime value -> TypeError naming the path
     form.setValues({path: v})   // batched multi-set
     form.reset()                // restore initialValues; clear touched, submitAttempted, submitError
+    form.commit(path?)          // fold dirty values into baseline (all, or one path); unregistered path -> TypeError; committed fields pristine, reset() now targets committed state; values deep-copied through the whitelist
+    form.toPatch()              // [{path, from, to}] of exactly the dirty paths (from=baseline, to=current); field set back to initial ref excluded; untracked + read-only, safe in an effect
+    form.reinitialize(next)     // re-seed like initialValues (deep-copied + whitelist-validated BEFORE any state change -- atomic TypeError on bad input); drops every edit, paths absent from next re-seed undefined, clears touched + submit state
     form.submit(ev?)            // Promise<boolean>  preventDefault + validate + onSubmit
     form.isValid                // ReadSignal<boolean>  always live
     form.isDirty                // ReadSignal<boolean>  any field differs from initial
@@ -158,6 +169,30 @@ regardless of mode. `reset()` clears it again.
   fire `onSubmit` twice, both racing on the same `values()` snapshot. Guard
   via `isSubmitting` (UI), `@zakkster/lite-throttle` (hotkeys/programmatic),
   or an early-return on `isSubmitting.peek()`. See the recipe below.
+- **Engine projection, baseline still unreachable (v1.2.0).** The value core
+  rides a `@zakkster/lite-project` projection (`fromAccessors` over per-field
+  seed copies + a `baselineRev` signal; per-key overlay signal + projected
+  computed). The public API is frozen and every S1 contract holds verbatim:
+  `source.get` returns the field's seed copy, never a baseline reference; commit
+  deep-copies in; the baseline is never caller-reachable.
+- **Overlaid === dirty via clear-on-initial (v1.2.0).** `field.set(v)` with
+  `Object.is(v, seed)` clears the overlay instead of staging it, so "overlaid"
+  coincides with "dirty"; `form.isDirty` rides the engine's tracked
+  `dirtyCount()`.
+- **Scratch-tree validate() ownership (v1.2.0).** Schema mode no longer clones
+  per keystroke; the object handed to schema `validate()` is a form-owned,
+  transient scratch tree (leaves written in place, object leaves by reference,
+  rebuilt only on `reinitialize`/`commit`). Retaining or mutating it is
+  undefined behaviour. Public `values()` still returns a fresh deep copy.
+- **Source-mode dirty = overlay presence (v1.2.0).** In `createForm({ source })`
+  engine mode, edits stage as overlays (source untouched); an authoritative
+  source write under an un-overlaid field is not an edit and never flips dirty;
+  a conflicting write under an overlaid field stays masked. `commit()` writes
+  through.
+- **Peer floor `@zakkster/lite-project ^1.4.1` (v1.2.0).** 1.4.0 was falsified
+  by lite-form's t6 (a ~40 B/op hot-path context allocation in the engine's
+  `get`/`peek`/`set`, invisible to its own pool-census gate) and fixed upstream
+  as 1.4.1 with the transient witness ported. See `decisions/0002-engine.md`.
 
 ## Recipes
 
@@ -333,7 +368,7 @@ Pool clean: `stats().activeNodes === 0` after every bench run.
 
 ## Testing
 
-53 deterministic tests (`node:test`): `npm test`. Plus the torture gate:
+77 deterministic tests (`node:test`): `npm test`. Plus the torture gate:
 `npm run torture` (node --expose-gc --preserve-symlinks test/torture.mjs) which
 proves zero-GC keystrokes (@zakkster/lite-gc-profiler) and zero-leak teardown
 (@zakkster/lite-leak). `npm run verify` runs both.
