@@ -37,10 +37,10 @@ emailInput.addEventListener("input", (ev) => e.set(ev.target.value));
 // e.error() is a live reactive read -- null until shown
 ```
 
-**Headline (measured on Node 22, see [Benchmarks](#benchmarks)):**
-**~1.5 million keystrokes/sec** on a 100-field form -- typing in one field runs
-exactly one validator. **8× faster than a hand-written "run all validators on
-every change" form.** Lifecycle: ~210K create+dispose/sec, ~1 byte retained per
+**Headline (measured on Node 26, see [Benchmarks](#benchmarks)):**
+**~6.1 million keystrokes/sec** on a 100-field form -- typing in one field runs
+exactly one validator. **~15× faster than a hand-written "run all validators on
+every change" form.** Lifecycle: ~205K create+dispose/sec, ~1 byte retained per
 form. Pool returns to baseline (`stats().activeNodes === 0`).
 
 ---
@@ -55,6 +55,7 @@ form. Pool returns to baseline (`stats().activeNodes === 0`).
 - [Cross-field validation](#cross-field-validation)
 - [Schema (Zod / Yup)](#schema-zod--yup)
 - [Async validation](#async-validation)
+- [Field arrays](#field-arrays)
 - [Surfacing server errors (the `setFieldError` story)](#surfacing-server-errors-the-setfielderror-story)
 - [Submit lifecycle](#submit-lifecycle)
 - [API reference](#api-reference)
@@ -87,7 +88,7 @@ A small set of design constraints picked deliberately:
   -- drives a submit button correctly from the first render. A field's
   `error()` is reveal-gated (`change` / `blur` / `submit`), so a pristine form
   doesn't scream "required" at the user before they've touched anything.
-- **No DOM. No renderer.** lite-form ships ~621 lines of pure state. Bind it
+- **No DOM. No renderer.** lite-form ships ~1,565 lines of pure state. Bind it
   with `@zakkster/lite-signal-dom`, `@zakkster/lite-element`, hand-written
   `addEventListener`, or whatever you want. Forms are state, not components.
 - **Pool-clean teardown.** `form.dispose()` frees every signal and computed.
@@ -96,8 +97,8 @@ A small set of design constraints picked deliberately:
 
 If you want a `<Form>` component, a renderer, a CSS framework, a server adapter,
 or a 12-step wizard runtime -- this is the wrong library. One factory function,
-two peer deps (lite-signal always; lite-project only when you opt into engine
-mode), ~6.4 KB minified.
+two peer deps (lite-signal + lite-project, the projection engine BOTH modes ride
+-- the import is static), ~21 KB minified.
 
 ---
 
@@ -369,6 +370,65 @@ stays gated at zero.
 
 ---
 
+## Field arrays
+
+Rows with identity (v1.4.0). Declare an array path in `arrays` and its rows get
+stable keys: values, dirty, touched, errors, and async state travel with the
+ROW when it moves -- never with its index.
+
+```js
+const form = createForm({
+    initialValues: { rows: [{ id: "a", qty: 1 }, { id: "b", qty: 2 }] },
+    arrays: {
+        rows: {
+            key: (item) => item.id,          // stable identity, derived once per row
+            validators: {
+                // local(sub) reads a sibling field IN THIS ROW (tracked):
+                qty: (v, { local }) => v <= local("cap") ? null : "over cap",
+            },
+        },
+    },
+});
+
+const rows = form.array("rows");
+rows.keys();                                 // ["a", "b"] -- tracked, frozen snapshot
+const k = rows.add({ id: "c", qty: 3 });     // -> "c"
+rows.move("c", 0);                           // order-only: no row state is touched
+form.field("rows.c.qty").set(4);             // keyed paths are real paths...
+rows.row("c").field("qty");                  // ...and this is the SAME Field object
+rows.remove("b");                            // row disposed; its slots reclaimed
+```
+
+The laws:
+
+- **Opt-in per path.** An array you do NOT declare stays exactly what it was:
+  a plain leaf value (set the whole array; `Object.is` dirty).
+- **One addressing model per declared path.** Index paths (`rows.0.qty`) and
+  whole-array writes throw a `TypeError` on a declared array -- the row API is
+  the only door. Mixed addressing is how overlapping patches happen.
+- **Reorder is order-only.** `move()` re-runs no validators and writes no row
+  field -- proven by the torture tier (instrumented counters), not just
+  promised.
+- **Structure is state.** `isDirty` covers adds/removes/reorders. `toPatch()`
+  emits per-field entries for existing rows plus ONE
+  `{ path, structure: { order, added, removed } }` entry per structurally
+  dirty array; an added row rides `structure.added` with its full value and
+  never emits overlapping field entries. `commit()` promotes structure +
+  values into the baseline; `reset()` restores baseline rows and order.
+- **Removal is teardown.** `remove()` disposes the row's signals and async
+  lanes (an in-flight validation's settlement becomes a no-op) and reclaims
+  its projection slots. Distinct-key add/remove churn holds `activeNodes`
+  flat under the torture gate.
+- **Merge is deferred, loudly.** 2-arg `reinitialize(next, policy)` throws on
+  a form with declared arrays (keyed row merge is a recorded future design);
+  1-arg re-seeds arrays fully, keys re-derived from the new items.
+
+Cost: a keystroke into a row field is gated in the same zero-allocation class
+as a flat field (0.119 B/op measured). Structure ops are O(rows), recorded:
+an add+remove pair ~8.9 KB, a move ~294 B.
+
+---
+
 ## Surfacing server errors (the `setFieldError` story)
 
 lite-form has no `setFieldError(path, message)` API. It doesn't need one.
@@ -511,6 +571,7 @@ document; that's where throttle wins.
 | `onSubmit`      | `(values) => void \| Promise<void>`                 | --                |
 | `registry`      | `createRegistry()` handle                           | default registry |
 | `source`        | live keyed source (e.g. a lite-store proxy)         | --                |
+| `arrays`        | `Record<string, ArrayConfig>` -- keyed field arrays, see [Field arrays](#field-arrays) | `{}` |
 
 Passing `source` selects **engine mode**: the value core projects the live
 source instead of the detached baseline. Edits stage as overlays (the source is
@@ -519,13 +580,18 @@ overlay presence -- an authoritative source write under an un-overlaid field is
 not an edit and never flips dirty; a conflicting write under an overlaid field
 stays masked. Without `source`, the form projects the detached baseline through
 the same engine -- lite-project is imported statically and required in BOTH modes.
+Declared `arrays` are default-mode only: `source` + `arrays` together throw at
+construction (there is no keyed baseline to travel with a row in source mode).
 
 ### `form.field(path) -> Field`
 
 Returns the reactive state for a field. Paths are dotted (`"user.address.zip"`,
-`"items.0.qty"`). Fields declared in `initialValues`/`validators`/`fieldOpts`
-are eagerly allocated; calling `field()` on an undeclared path creates one
-lazily on first access.
+`"items.0.qty"` -- index segments descend into UNDECLARED arrays). Fields
+declared in `initialValues`/`validators`/`fieldOpts` are eagerly allocated;
+calling `field()` on an undeclared path creates one lazily on first access.
+On a DECLARED array path the segment after the array path must be a live row
+key (`"rows.<key>.qty"` is the same Field as `row(key).field("qty")`); an index
+segment or whole-array write throws (see [Field arrays](#field-arrays)).
 
 ### Field
 
@@ -548,13 +614,14 @@ lazily on first access.
 | member             | type                                | notes                                          |
 |--------------------|-------------------------------------|------------------------------------------------|
 | `field(path)`      | `(string) => Field`                 |                                                |
-| `values()`         | `() => object`                      | untracked snapshot                             |
-| `setValues(patch)` | `(object) => void`                  | batched multi-set                              |
+| `array(path)`      | `(string) => ArrayHandle`           | keyed-row handle for a declared array: `keys()` / `length()` / `structureDirty()` tracked, `row(key).field(sub)`, `add(item, atIndex?) -> key`, `remove(key)`, `move(key, toIndex)` (see [Field arrays](#field-arrays)); an undeclared path throws |
+| `values()`         | `() => object`                      | untracked snapshot; declared arrays materialize in order |
+| `setValues(patch)` | `(object) => void`                  | batched multi-set; not atomic under a throwing entry (an illegal path throws loud, but earlier writes land) |
 | `reset()`          | `() => void`                        | restore initial, clear touched + submit state  |
 | `commit(path?)`    | `(path?) => void`                   | fold dirty values into the baseline (all, or one path); committed fields go pristine, `reset()` now targets the committed state; values deep-copied through the whitelist; an unregistered `path` throws a `TypeError` (loud, never a lazy field creation) |
-| `toPatch()`        | `() => Array<{path, from, to}>`     | exactly the dirty paths (`from` = baseline, `to` = current); a field set back to its initial ref is excluded; untracked + read-only, safe in an effect |
-| `reinitialize(next, policy?)`| `(next, policy?) => void`  | 1-arg: re-seed like `initialValues` (deep-copied + whitelist-validated BEFORE any state change -- atomic `TypeError` on bad input); drops every edit, absent paths re-seed `undefined`, clears touched + submit state. With a `policy`: MERGES instead -- dirty fields survive unless echoed (see [The engine](#the-engine)); default-mode only (source mode throws -- use `reconcile`) |
-| `reconcile(policy?)`| `(policy?) => void`                | source-mode merge: drop exactly the overlays the source now agrees with (default `Object.is`); legal in default mode too (a no-op under the default policy, by design) |
+| `toPatch()`        | `() => FormPatchEntry[]`            | exactly the dirty paths as `{path, from, to}` (`from` = baseline, `to` = current); a field set back to its initial ref is excluded; plus one `{path, structure: {order, added, removed}}` entry per structurally-dirty declared array (entries never overlap); untracked + read-only, safe in an effect |
+| `reinitialize(next, policy?)`| `(next, policy?) => void`  | 1-arg: re-seed like `initialValues` (deep-copied + whitelist-validated BEFORE any state change -- atomic `TypeError` on bad input); drops every edit, absent paths re-seed `undefined`, clears touched + submit state; declared arrays re-seed fully (keys re-derived). With a `policy`: MERGES instead -- dirty fields survive unless echoed (see [The engine](#the-engine)); default-mode only (source mode throws -- use `reconcile`), and a form with declared arrays throws (keyed row merge is a recorded future design) |
+| `reconcile(policy?)`| `(policy?) => void`                | source-mode merge: drop exactly the overlays the source now agrees with (default `Object.is`); legal in default mode too (a no-op under the default policy, by design); the policy runs under the same purity latch as the 2-arg merge -- a mutating policy throws (v1.4.0) |
 | `submit(ev?, opts?)`| `(ev?, {patch?}) => Promise<boolean>` | true if `onSubmit` ran without throwing; `opts.patch: true` posts `toPatch()` to `onSubmit` instead of `values()` (an empty patch still submits `[]` -- the caller checks `.length`) |
 | `isValidating`     | `ReadSignal<boolean>`               | true while ANY field's async check is unsettled |
 | `isValid`          | `ReadSignal<boolean>`               | always live                                    |
@@ -568,29 +635,30 @@ lazily on first access.
 
 ## Benchmarks
 
-Measured on Node 22.22 with `--expose-gc`. Run yourself: `npm run bench`.
+Measured on Node 26 with `--expose-gc`. Run yourself: `npm run bench`.
 
 | Scenario                                                          | N       | ops/sec     | transient/op | retained/op |
 |-------------------------------------------------------------------|--------:|------------:|-------------:|------------:|
-| **A) create+dispose, small** (3 fields, 1 validator)              | 20K     | **~210K**   | ~260 B       | ~2 B        |
-| **B) create+dispose, large** (100 fields + per-field validators)  | 2K      | ~1.3K       | ~9 KB        | ~1 B        |
-| **C) keystroke on 1 of 100 fields** (per-field validators)        | 50K     | **~1.5M**   | ~28 B        | ~1 B        |
-| **D) keystroke on 1 of 100 fields** (form-level schema, hoisted)  | 50K     | ~30K        | ~164 B       | ~1 B        |
-| **E) cross-field validation** (pw + confirm, ctx.get)             | 50K     | **~5M**     | ~25 B        | 0 B         |
-| **F) pure-JS baseline** (handwritten, runs all 100 validators)    | 50K     | ~180K       | ~8 B         | 0 B         |
+| **A) create+dispose, small** (3 fields, 1 validator)              | 20K     | **~205K**   | ~1.8 KB      | ~0 B        |
+| **B) create+dispose, large** (100 fields + per-field validators)  | 2K      | ~3.8K       | ~9.6 KB      | ~21 B       |
+| **C) keystroke on 1 of 100 fields** (per-field validators)        | 50K     | **~6.1M**   | ~27 B        | ~1 B        |
+| **D) keystroke on 1 of 100 fields** (form-level schema, hoisted)  | 50K     | ~83K        | ~638 B       | ~1 B        |
+| **E) cross-field validation** (pw + confirm, ctx.get)             | 50K     | **~21M**    | ~25 B        | 0 B         |
+| **F) pure-JS baseline** (handwritten, runs all 100 validators)    | 50K     | ~400K       | ~318 B       | 0 B         |
 
 **Headline:**
 
-- **A keystroke on a 100-field form lite-form ~ 8× faster** than the
-  handwritten pattern that re-runs every validator on every change (F vs C).
-  The reason: lite-form only invokes `f0`'s validator. The other 99 fields'
-  validators are cached and never called -- their `error()` short-circuits
-  on the reveal gate before reading `rawError()`.
-- **Schema-validated forms cost ~33 µs per keystroke** at N=100 (D). The cost
-  is dominated by snapshot construction (an own-key walk that deep-copies each
-  leaf + setPath × N) -- your Zod parse runs **once** per change, not N times.
+- **A keystroke on a 100-field form is ~15× faster** than the handwritten
+  pattern that re-runs every validator on every change (F vs C). The reason:
+  lite-form only invokes `f0`'s validator. The other 99 fields' validators
+  are cached and never called -- their `error()` short-circuits on the
+  reveal gate before reading `rawError()`.
+- **Schema-validated forms cost ~12 µs per keystroke** at N=100 (D) -- your
+  Zod parse runs **once** per change, not N times. (Before 1.2.0 this cost
+  ~33 µs, dominated by a per-keystroke snapshot clone; the engine's scratch
+  tree removed it.)
 - **Cross-field validation is cheap.** `ctx.get` records a dependency on
-  read; subsequent changes re-validate only the dependent. ~5M ops/sec.
+  read; subsequent changes re-validate only the dependent. ~21M ops/sec.
 - **Pool clean.** All scenarios end with `stats().activeNodes === 0` --
   no leaked signals or computeds across 100K+ lifecycle cycles.
 
@@ -681,6 +749,11 @@ test/torture.mjs`):
 | dotted, 3-segment      | 0.112      | GATED (<= 16384 B / 50K ops)         |
 | schema mode            | 113.440    | recorded baseline (was 20,990 in 1.1.0; ceiling 32768 B/op) |
 | async-validated        | 629.703    | recorded (trigger + promise creation; settlements outside the window; see [Async validation](#async-validation)) |
+| row field (declared array) | 0.119  | GATED (<= 16384 B / 50K ops)         |
+
+Structure ops on declared arrays are O(rows), not keystroke-class -- recorded,
+ratcheted: an add+remove pair 8,855 B/op, a move 294 B/op (order snapshot +
+one reactive propagation; removal includes teardown + slot reclaim).
 
 The schema-mode figure is a 185x fall from 1.1.0's 20,990 B/op -- the scratch
 tree replaced a full per-keystroke clone.
@@ -695,7 +768,7 @@ tree replaced a full per-keystroke clone.
 
 ## Testing
 
-lite-form ships **118 deterministic tests** (`node:test`, zero runtime deps):
+lite-form ships **144 deterministic tests** (`node:test`, zero runtime deps):
 
 ```sh
 npm test          # the fast suite
@@ -808,7 +881,7 @@ Both are always required. `@zakkster/lite-project` (~7 KB minified, 958 lines)
 is the projection engine the value core rides in BOTH modes -- the import is
 static, so it must be installed even if you never pass `source` (default mode
 projects the detached baseline through it; engine mode projects your live
-source). lite-form is ~621 lines on top of the two.
+source). lite-form is ~1,565 lines on top of the two.
 
 ---
 

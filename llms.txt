@@ -6,7 +6,7 @@ in one field of a 100-field form runs exactly one validator. A form-level
 schema (Zod/Yup-shaped) is hoisted into a single computed that runs once per
 keystroke, not once per field.
 
-ESM-only. Node >= 18. Single file `Form.js`, 621 lines, ~6.4 KB minified.
+ESM-only. Node >= 18. Single file `Form.js`, 1565 lines, ~21 KB minified.
 Peer dependencies: `@zakkster/lite-signal ^1.5.0` and
 `@zakkster/lite-project ^1.4.1` (the projection engine the value core rides in
 BOTH modes -- the import is static, so it must be installed even if you never
@@ -61,6 +61,16 @@ Config (all optional):
   for the async lane's trigger (called once at construction, form-owned).
   Default: the field's own value. The lite-debounce recipe:
   `username: (fld) => debounce(() => fld.value(), 300)`.
+- `arrays: Record<string, ArrayConfig>` -- keyed field arrays (1.4.0), keyed by
+  the dotted path of an Array in `initialValues` (must resolve to an Array,
+  else TypeError). `ArrayConfig = { key: (item, i) => string, validators?,
+  validatorsAsync?, asyncSources?, fieldOpts? }` -- sub-config keyed by
+  SUB-PATH within a row (no wildcard grammar). `key` derives each row's stable
+  identity (once per row per seed/add/re-seed, never per keystroke; non-empty,
+  no ".", hostile segments rejected, duplicates throw). Row validator ctx
+  gains `local(sub)` (reads this row's sibling field, tracked). Default mode
+  only: `source` + `arrays` throws at construction. An UNDECLARED array stays
+  a plain leaf value exactly as before.
 
 ## Field interface (`form.field(path)`)
 
@@ -84,14 +94,15 @@ paths; created lazily on first `.field(path)` for undeclared paths.
 
 ## Form interface
 
-    form.field(path)            // get / lazy-create a Field
+    form.field(path)            // get / lazy-create a Field; on a DECLARED array path the next segment must be a live row key (same Field as row(key).field(sub)); index or non-live-key segments throw
+    form.array(path)            // ArrayHandle for a declared array (1.4.0): keys() tracked frozen snapshot / length() / structureDirty() tracked; row(key) -> { key, field(sub) } identity-stable; add(item, atIndex?) -> key; remove(key); move(key, toIndex); undeclared path or unknown key -> TypeError
     form.values()               // untracked snapshot; own-walk materialization, each leaf deep-copied; uncopyable runtime value -> TypeError naming the path
-    form.setValues({path: v})   // batched multi-set
+    form.setValues({path: v})   // batched multi-set; NOT atomic under a throwing entry (a hostile or illegal path throws loud, but writes applied before it land) -- 1.3.0 semantics, now documented
     form.reset()                // restore initialValues; clear touched, submitAttempted, submitError
     form.commit(path?)          // fold dirty values into baseline (all, or one path); unregistered path -> TypeError; committed fields pristine, reset() now targets committed state; values deep-copied through the whitelist
-    form.toPatch()              // [{path, from, to}] of exactly the dirty paths (from=baseline, to=current); field set back to initial ref excluded; untracked + read-only, safe in an effect
-    form.reinitialize(next, policy?) // 1-arg: re-seed like initialValues (deep-copied + whitelist-validated BEFORE any state change -- atomic TypeError on bad input); drops every edit, absent paths re-seed undefined, clears touched + submit state. 2-arg MERGE (default mode only; source mode throws -- use reconcile): pristine ADOPTS n; dirty + (Object.is(n,d) || policy(n,d) === true) ECHOES (overlay cleared, pristine at n); else CONFLICT (draft kept masking n, baseline re-seeds underneath: reset() lands n, toPatch().from === n); touched clears on ADOPT/ECHO, survives CONFLICT; submit state never written; throwing policy is atomic
-    form.reconcile(policy?)     // source-mode merge: drop exactly the overlays the live source agrees with (default Object.is); legal in default mode (no-op under the default policy by design)
+    form.toPatch()              // [{path, from, to}] of exactly the dirty paths (from=baseline, to=current); field set back to initial ref excluded; plus ONE {path, structure:{order, added:[{key,index,value}], removed}} entry per structurally-dirty declared array -- added rows carry their full value there and never emit field entries (no overlap); untracked + read-only, safe in an effect
+    form.reinitialize(next, policy?) // 1-arg: re-seed like initialValues (deep-copied + whitelist-validated BEFORE any state change -- atomic TypeError on bad input); drops every edit, absent paths re-seed undefined, clears touched + submit state; declared arrays re-seed FULLY (keys re-derived from next, all row state cleared, order adopted). 2-arg MERGE (default mode only; source mode throws -- use reconcile; a form with DECLARED ARRAYS throws -- keyed row merge is a recorded future design): pristine ADOPTS n; dirty + (Object.is(n,d) || policy(n,d) === true) ECHOES (overlay cleared, pristine at n); else CONFLICT (draft kept masking n, baseline re-seeds underneath: reset() lands n, toPatch().from === n); touched clears on ADOPT/ECHO, survives CONFLICT; submit state never written; throwing policy is atomic
+    form.reconcile(policy?)     // source-mode merge: drop exactly the overlays the live source agrees with (default Object.is); legal in default mode (no-op under the default policy by design); the policy runs LATCHED (1.4.0) -- any mutating form call from inside it throws TypeError, the same purity window as the 2-arg merge
     form.submit(ev?, opts?)     // Promise<boolean>  preventDefault + validate + onSubmit; opts.patch: true posts toPatch() instead of values() (empty patch still submits [])
     form.isValidating           // ReadSignal<boolean>  true while ANY field's async check is unsettled
     form.isValid                // ReadSignal<boolean>  always live
@@ -100,6 +111,33 @@ paths; created lazily on first `.field(path)` for undeclared paths.
     form.submitError            // ReadSignal<Error|null>  last operational throw
     form.submitAttempted        // WritableSignal<boolean>  set true to force-reveal all errors
     form.dispose()              // free every signal/computed; idempotent
+
+## Field arrays (1.4.0)
+
+Declare a path in `arrays` and its rows get stable keys: values, dirty,
+touched, error, and async state travel with the ROW across moves, never with
+the index. Laws:
+
+- One addressing model per declared path: index paths (`rows.0.name`),
+  `field("rows")`, and whole-array writes throw TypeError directing to the
+  row API. `setValues({"rows.<key>.name": v})` on a live key is legal.
+- Reorder is order-only: `move()` re-runs no validators and writes no row
+  field (torture-proven with instrumented counters); `keys()` returns a new
+  frozen snapshot exactly once per structural mutation.
+- Added rows: presence is structure-dirty; their fields compare dirty against
+  the ADD SEED; `commit()` promotes (row enters baseline, order folds);
+  `reset()` drops added rows and restores removed baseline rows + order.
+- Removal is teardown: the row's signals + async lanes are disposed (an
+  in-flight settlement becomes a no-op; a PENDING lane releases its
+  isValidating slot), fields leave the map, projection slots are pruned.
+  Distinct-key add/remove churn holds activeNodes flat under the gate.
+- Single-leaf rows (a primitive/array/Date item): exactly ONE field, addressed
+  as `<arrayPath>.<key>` with no sub segment. A named sub under a single-leaf
+  row, or an empty sub on an object row, throws TypeError (it would be
+  invisible to values()/toPatch() while still counting toward validity).
+- Schema mode: the scratch tree materializes declared arrays in order;
+  index-based schema error keys translate index -> key per run (a moved row's
+  error follows the CURRENT order -- the schema sees current values).
 
 ## Validation modes
 
@@ -233,6 +271,27 @@ regardless of mode. `reset()` clears it again.
   value-preserving, so the Object.is cutoff never re-ran the cached computed
   while `initialRef` was re-captured underneath. `dirty` now tracks
   `baselineRev` (the re-capture notifier) directly.
+- **Row identity is the key, never the index (v1.4.0).** A declared array's
+  overlay paths are `<arrayPath>.<rowKey>.<sub>`; per-row state (value, dirty,
+  touched, error, isValidating) is keyed, `move()` writes order only, and the
+  patch surface never emits overlapping entries (added rows ride
+  `structure.added` whole). One addressing model per declared path -- index
+  and whole-array access throw. Undeclared arrays are byte-identical to 1.3.0.
+- **Off-cost arrays seam (v1.4.0).** Array-aware variants of
+  values/toPatch/commit/reset/reinitialize/submit/dispose and the validity
+  composites are selected at construction (`hasArrays`, the async-seam
+  precedent); a form with no `arrays` takes the 1.3.0 paths byte-for-byte
+  (t6 floors unchanged). Row-field keystroke: 0.119 B/op GATED at the same
+  suite constant as flat/dotted. Structure ops recorded: add+remove pair
+  8,855 B/op, move 294 B/op.
+- **LF-13 fixed pre-release (v1.4.0, never shipped).** Teardown without a
+  notifier: removing the row holding `isValid`'s only live dependency
+  orphaned the memoized verdict (the LF-12 class on the validity lane), and
+  a lane torn down while PENDING stranded the form-level isValidating
+  counter. `rowFieldsValid` now tracks each array's structure revision and
+  `teardownRow` releases the pending slot. The transferable rule: a
+  short-circuiting computed over a DYNAMIC field population must track the
+  population's revision, not only the members it read.
 
 ## Recipes
 
@@ -394,21 +453,21 @@ The schema runs once per keystroke regardless of field count.
     // Pick (1) for UI forms (button stays disabled until the request settles),
     // (2) for programmatic / hotkey submits (Enter key in two places).
 
-## Performance (Node 22 measured)
+## Performance (Node 26 measured)
 
-- Create + dispose, small (3 fields): ~210K ops/sec, ~260 B transient, ~2 B retained
-- Create + dispose, large (100 fields): ~1.3K ops/sec, ~9 KB transient, ~1 B retained
-- Keystroke on 1 of 100 fields (per-field validators): **~1.5M ops/sec**
-- Keystroke on 1 of 100 fields (form-level schema, hoisted): ~30K ops/sec
-- Cross-field validation (pw + confirm): ~5M ops/sec
-- Pure-JS handwritten baseline (runs all 100 validators): ~180K ops/sec
-- Speedup over handwritten pattern: ~8×
+- Create + dispose, small (3 fields): ~205K ops/sec, ~1.8 KB transient, ~0 B retained
+- Create + dispose, large (100 fields): ~3.8K ops/sec, ~9.6 KB transient, ~21 B retained
+- Keystroke on 1 of 100 fields (per-field validators): **~6.1M ops/sec**
+- Keystroke on 1 of 100 fields (form-level schema, hoisted): ~83K ops/sec
+- Cross-field validation (pw + confirm): ~21M ops/sec
+- Pure-JS handwritten baseline (runs all 100 validators): ~400K ops/sec
+- Speedup over handwritten pattern: ~15×
 
 Pool clean: `stats().activeNodes === 0` after every bench run.
 
 ## Testing
 
-118 deterministic tests (`node:test`): `npm test`. Plus the torture gate:
+144 deterministic tests (`node:test`): `npm test`. Plus the torture gate:
 `npm run torture` (node --expose-gc --preserve-symlinks test/torture.mjs) which
 proves zero-GC keystrokes (@zakkster/lite-gc-profiler) and zero-leak teardown
 (@zakkster/lite-leak). `npm run verify` runs both.

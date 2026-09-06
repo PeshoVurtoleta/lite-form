@@ -255,6 +255,70 @@ export async function run() {
   check(live5 === 0, () => "t7: merge-churn leak witness sees " + live5 + " retained field record(s) after dispose");
   check(tracker5.audit().length === 0, () => "t7: merge-churn leak audit reported " + tracker5.audit().length + " finding(s)");
   check(warns5.length === 0, () => "t7: merge-churn leak witness raised " + warns5.length + " warning(s)");
+
+  // --- witness 6: declared-array churn (S4) ---------------------------------
+  // Thousands of add/remove cycles with DISTINCT keys (never reused: "k"+i) plus
+  // periodic move, each added row's field handle tracked. Three signals:
+  //   (a) activeNodes FLAT across the churn -- the prune bound. remove() disposes
+  //       the row root and calls handle.prune() ONCE, which reclaims the removed
+  //       row's un-overlaid+unobserved slots (and, per D5, may reclaim wider), so
+  //       distinct-key add/remove churn never GROWS the pool. Exact refund is NOT
+  //       the law: the sample is taken AFTER a warmup that lets prune settle, and
+  //       the end delta must be <= 0. The slotleak control blanks that prune, so
+  //       removed-row slots accumulate and this "t7 arrays churn" law dies.
+  //   (b) the lite-leak tracker returns to 0 (row-field records collectable).
+  //   (c) dispose() returns activeNodes to the pre-form baseline.
+  const leaks6 = [];
+  const warns6 = [];
+  const tracker6 = createLeakTracker({
+    name: "t7-arrays",
+    onLeak: (r) => leaks6.push(r.kind),
+    onWarning: (w) => warns6.push(w.kind),
+  });
+  const ARR_CYCLES = 4096;
+  withRegistry(CEIL, (reg) => {
+    const base = reg.stats().activeNodes;
+    const rows = new Array(4);
+    for (let i = 0; i < 4; i++) rows[i] = { id: "base" + i, n: 0 };
+    const form = createForm({
+      initialValues: { rows },
+      arrays: { rows: { key: (item) => item.id, validators: { n: (v) => (v > 900 ? "hi" : null) } } },
+      registry: reg,
+    });
+    const arr = form.array("rows");
+    // Warmup: distinct-key add/touch/remove cycles so prune has settled before the
+    // flat sample (its wider-reclaim first-touch cost is paid here, not measured).
+    for (let w = 0; w < 64; w++) {
+      const k = "w" + w;
+      arr.add({ id: k, n: w });
+      void form.field("rows." + k + ".n").value();
+      arr.remove(k);
+    }
+    const aWarm = reg.stats().activeNodes;
+    for (let i = 0; i < ARR_CYCLES; i++) {
+      const k = "k" + i;                              // DISTINCT key, never reused
+      arr.add({ id: k, n: i & 1023 });
+      const fld = form.field("rows." + k + ".n");     // materialize + touch the slot
+      fld.set((i & 1) ? 500 : 0);
+      tracker6.track(fld, null, i, { audit: true });  // primitive tag, null cleanup
+      if ((i & 15) === 0) arr.move("base1", (i & 31) ? 0 : 3); // periodic move
+      arr.remove(k);
+    }
+    const churnDelta = reg.stats().activeNodes - aWarm;
+    check(churnDelta <= 0,
+      () => "t7 arrays churn leaked " + churnDelta + " node(s) over " + ARR_CYCLES +
+        " distinct-key add/remove cycles -- removed-row slots were not reclaimed (prune bound violated)");
+    form.dispose();
+    const after = reg.stats().activeNodes;
+    check(after === base,
+      () => "t7 arrays churn left " + (after - base) + " node(s) after dispose (pre-form baseline)");
+  });
+  globalThis.gc();
+  for (let k = 0; k < 12 && tracker6.size() > 0; k++) { globalThis.gc(); await settle(); }
+  const live6 = tracker6.size();
+  check(live6 === 0, () => "t7 arrays churn leak witness sees " + live6 + " retained row-field record(s) after dispose");
+  check(tracker6.audit().length === 0, () => "t7 arrays churn leak audit reported " + tracker6.audit().length + " finding(s)");
+  check(warns6.length === 0, () => "t7 arrays churn leak witness raised " + warns6.length + " warning(s)");
 }
 
 // Seeded Fisher-Yates shuffle used by witness 4's out-of-order settlement.

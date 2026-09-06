@@ -113,11 +113,12 @@ async function main() {
   const { run: t6 } = await import("./torture/t6-alloc.mjs");
   const { run: t7 } = await import("./torture/t7-soak.mjs");
   const { run: t8 } = await import("./torture/t8-async.mjs");
+  const { run: t10 } = await import("./torture/t10-arrays.mjs");
   const { run: t9 } = await import("./torture/t9-controls.mjs");
 
   // --- control mode: run ONLY the targeted tier, never t9 --------------------
   if (BREAK) {
-    const targeted = { grow: t6, alloc: t6, drop: t5, leak: t7 };
+    const targeted = { grow: t6, alloc: t6, drop: t5, leak: t7, rowident: t10 };
     const run = targeted[BREAK];
     if (run === undefined) {
       process.stderr.write("torture: FAIL -- unknown FORM_TORTURE_BREAK '" + BREAK + "'\n");
@@ -146,6 +147,7 @@ async function main() {
     ["t6 alloc", t6],
     ["t7 soak", t7],
     ["t8 async", t8],
+    ["t10 arrays", t10],
     ["t9 controls", t9],
   ];
 

@@ -36,7 +36,7 @@ const here = dirname(fileURLToPath(import.meta.url)); // test/torture
 const entry = join(here, "..", "torture.mjs");        // test/torture.mjs
 const formSrc = join(here, "..", "..", "Form.js");    // the REAL Form.js
 
-const CONTROLS = ["grow", "alloc", "drop", "leak", "realias", "reproto", "staleseq"];
+const CONTROLS = ["grow", "alloc", "drop", "leak", "realias", "reproto", "staleseq", "rowident", "slotleak"];
 
 const MARKERS = {
   grow: "the signal pool grew",
@@ -46,15 +46,20 @@ const MARKERS = {
   realias: "t1 LF-02",
   reproto: "t1 LF-03",
   staleseq: "t8 LF-09 stale settlement landed",
+  rowident: "t10 identity",
+  slotleak: "t7 arrays churn",
 };
 
 // Source-patch controls: an anchor that must occur EXACTLY once in Form.js and
 // the reintroduced-bug replacement. If the anchor drifts, die loudly rather than
 // silently patch nothing.
 const PATCH = {
+  // S4 re-anchor: the seed statement became a two-arm ternary (plain field arm
+  // vs keyed-row arm); the control patches the readBase ARM, reinstating exactly
+  // the LF-02 aliasing on plain fields. Detection power unchanged (t1 dies).
   realias: {
-    anchor: "const seeded = copyLeaf(readBase(baseline, path, segs));",
-    replacement: "const seeded = readBase(baseline, path, segs);",
+    anchor: "? copyLeaf(readBase(baseline, path, segs))",
+    replacement: "? readBase(baseline, path, segs)",
   },
   reproto: {
     anchor: 'if (hostileSeg(k)) throwHostile(k, p ? p + "." + k : k);',
@@ -62,9 +67,28 @@ const PATCH = {
   },
   // staleseq: disable the settlement-callback seq guard so a stale (or post-
   // dispose) settlement lands its verdict; t8's ordering test must catch it.
+  // S4 anchor sync: the settlement guard gained `lane.dead` (row teardown).
   staleseq: {
-    anchor: "if (disposed || lane.seq !== mySeq) return;",
+    anchor: "if (disposed || lane.dead || lane.seq !== mySeq) return;",
     replacement: "if (false) return;",
+  },
+  // rowident: derive row keys as String(i) in the SEED path instead of via the
+  // configured keyFn. Because EVERY seeded-array tier (t5 first) would catch a
+  // keyFn break, this control runs TARGETED at t10 only (break "rowident" ->
+  // torture.mjs runs t10 against the patched module), where t10's identity soak
+  // dies with the "t10 identity" marker.
+  rowident: {
+    anchor: "const key = arr.keyFn(seed, i);",
+    replacement: "const key = String(i);",
+    break: "rowident",
+  },
+  // slotleak: blank removeRow's handle.prune() (keeping the line shape) so removed-
+  // row slots are never reclaimed; t7's distinct-key churn law ("t7 arrays churn")
+  // catches the unbounded activeNodes growth. Full run (break "").
+  slotleak: {
+    anchor: "handle.prune();                                   // reclaim un-overlaid+unobserved slots (V2 seam)",
+    replacement: "void 0;                                           // reclaim un-overlaid+unobserved slots (V2 seam)",
+    break: "",
   },
 };
 
@@ -103,9 +127,11 @@ export async function run() {
       writeFileSync(tmp, source.replace(patch.anchor, patch.replacement), "utf8");
       let res;
       try {
-        // FORM_TORTURE_MODULE selects the patched form; BLANK the BREAK so the
-        // child runs every tier normally and must die at t1.
-        res = spawnChild({ FORM_TORTURE_MODULE: pathToFileURL(tmp).href, FORM_TORTURE_BREAK: "" });
+        // FORM_TORTURE_MODULE selects the patched form. Most patch controls blank
+        // the BREAK so the child runs every tier and dies at the first tier that
+        // exercises the break; rowident instead targets a single tier (t10) via its
+        // own break, because an earlier seeded-array tier would otherwise pre-empt it.
+        res = spawnChild({ FORM_TORTURE_MODULE: pathToFileURL(tmp).href, FORM_TORTURE_BREAK: patch.break || "" });
       } finally {
         // Unlink BEFORE the assertions: check() dies via process.exit, which
         // skips finally blocks, and a failing control must not strand the copy.

@@ -150,7 +150,71 @@ export async function run() {
     form.dispose();
   });
 
+  // --- window (e): ROW KEYSTROKE GATED (S4) ----------------------------------
+  // A warmed declared-array form: the target row field's slot is materialized once
+  // (touch + warm read), then a keystroke alternates two overlaying values on ONE
+  // row field. The keyed lookup is a Map.get on the interned keyed path; no string
+  // is concatenated per keystroke, so this is a HARD transient-garbage gate exactly
+  // like the flat/dotted windows. Pre-grown fixed-ceiling registry (throw), never
+  // grow in a gate.
+  let rowKs = 0;
+  withRegistry(CFG, (reg) => {
+    const rows = new Array(N);
+    for (let i = 0; i < N; i++) rows[i] = { id: "k" + i, n: 0 };
+    const form = createForm({
+      initialValues: { rows },
+      arrays: { rows: { key: (item) => item.id, validators: { n: (v) => (v > 900 ? "high" : null) } } },
+      registry: reg,
+    });
+    const f = form.field("rows.k7.n"); // touch the target row field so its slot exists
+    const fv = f.value;
+    const fe = f.error;
+    void fv();                         // warm read
+    const rowHot = (i) => { fv.set(1 + (i & 1)); void fe(); }; // two overlaying values, never the seed
+    const total = allocTotal(rowHot, 50000, 5000);
+    check(total <= 16384,
+      () => "t6 alloc gate rejected -- row keystroke allocated " + total +
+        " B of transient garbage over 50000 ops (budget 16384 B total, ~0 B/op)");
+    rowKs = total / 50000;
+    form.dispose();
+  });
+
+  // --- window (f): STRUCTURE OPS RECORDED (S4) --------------------------------
+  // add+remove PAIR per op, and move per op -- both legally allocate (Object.freeze
+  // of a fresh key slice, per-row createRoot, slot acquire/prune), so these are
+  // RECORDED baselines, not gates. Small op counts keep each window inside the
+  // initial semispace so no scavenge voids the reading. Distinct data is not needed
+  // here: the add reuses a freed key each op (remove frees it before the next add).
+  let addRemove = 0;
+  let move = 0;
+  withRegistry(CFG, (reg) => {
+    const rows = new Array(4);
+    for (let i = 0; i < 4; i++) rows[i] = { id: "b" + i, n: 0 };
+    const form = createForm({
+      initialValues: { rows },
+      arrays: { rows: { key: (item) => item.id } },
+      registry: reg,
+    });
+    const arr = form.array("rows");
+    const arHot = (i) => { arr.add({ id: "tmp", n: i & 1023 }); arr.remove("tmp"); };
+    addRemove = allocTotal(arHot, 200, 32) / 200;
+    const mvHot = (i) => { arr.move("b1", (i & 1) ? 3 : 0); }; // bounce between the ends
+    move = allocTotal(mvHot, 512, 64) / 512;
+    form.dispose();
+  });
+
   process.stderr.write("t6 LF-06 baseline dotted=" + dotted.toFixed(3) + " B/op schema=" + schema.toFixed(3) + " B/op asyncKeystroke=" + asyncKs.toFixed(3) + " B/op\n");
+  process.stderr.write("t6 S4 arrays rowKeystroke=" + rowKs.toFixed(3) + " addRemove=" + addRemove.toFixed(3) + " move=" + move.toFixed(3) + " B/op\n");
+
+  // RECORDED baselines with headroom. rowKeystroke is GATED above (16384 B /
+  // 50000 ops, measured ~0.1 B/op); addRemove/move are structural and legally
+  // allocate (createRoot + Object.freeze slice). Ratchets are measured + headroom:
+  // addRemove ~8.9 KB/op -> 32768 ceiling (the slotleak control runs this window
+  // with prune blanked, which only accumulates retained pool slots, not transient
+  // garbage, so the recorded window still survives to let t7 catch the leak);
+  // move ~0.29 KB/op -> 4096 ceiling.
+  check(!(addRemove > 32768), () => "t6: addRemove baseline " + addRemove + " B/op exceeds the 32768 ratchet ceiling");
+  check(!(move > 4096), () => "t6: move baseline " + move + " B/op exceeds the 4096 ratchet ceiling");
 
   // Generous sanity ceilings -- these are RECORDED baselines, not budgets. The
   // real numbers land in the report; only an order-of-magnitude regression dies.

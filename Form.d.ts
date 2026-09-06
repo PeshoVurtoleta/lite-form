@@ -64,6 +64,62 @@ export type AsyncValidator = (value: any, ctx: FieldContext) => Promise<string |
  */
 export type AsyncSourceFactory = (field: Field, ctx: FieldContext) => (() => any);
 
+/** Context handed to a ROW validator: `get(path)` plus `local(sub)`, which reads `<arrayPath>.<thisRowKey>.<sub>` with dependency tracking (cross-field within the same row without knowing the key). */
+export interface RowFieldContext extends FieldContext {
+    local(sub: string): any;
+}
+
+/** A per-row validator (declared inside an array config block, keyed by sub-path). */
+export type RowValidator = (value: any, ctx: RowFieldContext) => string | null | false | undefined | void;
+
+/** A per-row async validator: the S3 ordering law applies unchanged (latest settlement wins, stale ones dropped whole). */
+export type RowAsyncValidator = (value: any, ctx: RowFieldContext) => Promise<string | null | false | undefined | void>;
+
+/** A per-row async trigger-source factory (the row's Field is passed; the reader is torn down with the row). */
+export type RowAsyncSourceFactory = (field: Field, ctx: RowFieldContext) => (() => any);
+
+/**
+ * Declares one keyed field array (v1.4.0). The config path must resolve to an
+ * Array in `initialValues` (else TypeError at construction). Sub-config maps are
+ * keyed by the SUB-PATH within a row (dotted sub-paths legal) -- there is no
+ * wildcard path grammar. `key` derives each row's stable identity: called once
+ * per row per seed/add/re-seed (never per keystroke), it must return a
+ * non-empty string without "." (hostile segments rejected); duplicate keys
+ * throw. On a declared array, index addressing (`rows.0.name`) and whole-array
+ * writes throw -- the row API is the only door.
+ */
+export interface ArrayConfig {
+    key: (item: any, index: number) => string;
+    validators?: Record<string, RowValidator>;
+    validatorsAsync?: Record<string, RowAsyncValidator>;
+    asyncSources?: Record<string, RowAsyncSourceFactory>;
+    fieldOpts?: Record<string, FieldOpt>;
+}
+
+/** One row of a declared array: identity-stable per key; `field(sub)` returns the SAME Field as `form.field("<arrayPath>.<key>.<sub>")`. */
+export interface Row {
+    readonly key: string;
+    field(sub: string): Field;
+}
+
+/** Reactive handle for one declared array (from `form.array(path)`; cached). */
+export interface ArrayHandle {
+    /** Tracked. A frozen key-order snapshot -- the SAME array instance until the structure changes (Object.is-friendly). */
+    keys(): readonly string[];
+    /** Tracked row count. */
+    length(): number;
+    /** Tracked. True when order differs from baseline or adds/removes are pending. Field edits inside rows do NOT flip this; `isDirty` covers both. */
+    structureDirty(): boolean;
+    /** Identity-stable row accessor. @throws {TypeError} for a key that is not live. */
+    row(key: string): Row;
+    /** Insert a row (deep-copied as its ADD SEED) and return its key. `atIndex` 0..length (integer) or omitted to append. */
+    add(item: any, atIndex?: number): string;
+    /** Remove a row: its signals and async lanes are disposed (in-flight settlements become no-ops) and its projection slots reclaimed. @throws {TypeError} for a non-live key. */
+    remove(key: string): void;
+    /** Reorder: move a row to `toIndex` (integer 0..length-1). Order-only -- no per-row signal writes, no validator re-runs. */
+    move(key: string, toIndex: number): void;
+}
+
 /**
  * A merge policy for `reinitialize(next, policy)`: given the incoming server value
  * and the user's current draft, return `true` to CONFIRM the edit (drop the draft,
@@ -126,13 +182,15 @@ export interface FormConfig {
     validatorsAsync?: Record<string, AsyncValidator>;
     /** Per-field async trigger-source factories, keyed by path. Wrap a field's value in a debounce so async validation is debounced without lite-form owning a timer. */
     asyncSources?: Record<string, AsyncSourceFactory>;
+    /** Keyed field arrays (v1.4.0), keyed by the dotted path of an Array in `initialValues`. Opt-in per path: an UNDECLARED array stays a plain leaf value exactly as before. */
+    arrays?: Record<string, ArrayConfig>;
     /** Per-field parse/format, keyed by path. Config-level because fields are allocated eagerly. */
     fieldOpts?: Record<string, FieldOpt>;
     validateOn?: ValidateOn;
     /** Runs on a valid submit: receives the full `values()` snapshot, or the dirty-only `toPatch()` array when `submit(ev, { patch: true })` is used. */
     onSubmit?:
         | ((values: Record<string, any>) => void | Promise<void>)
-        | ((patch: FormPatch[]) => void | Promise<void>);
+        | ((patch: FormPatchEntry[]) => void | Promise<void>);
     /** Use a specific lite-signal registry instead of the default one. Bind with that registry's `effect`. */
     registry?: Registry;
     /**
@@ -153,9 +211,30 @@ export interface FormPatch {
     to: any;
 }
 
+/** The structure half of an array patch entry (v1.4.0). */
+export interface ArrayStructure {
+    /** Full current key order. */
+    order: readonly string[];
+    /** Added rows, each with its FULL current value -- added-row fields never emit separate field entries (no overlapping patches). */
+    added: ReadonlyArray<{ key: string; index: number; value: any }>;
+    /** Baseline keys no longer present. */
+    removed: readonly string[];
+}
+
+/** One structurally-dirty declared array as a patch entry (emitted only when structure-dirty). */
+export interface FormStructurePatch {
+    path: string;
+    structure: ArrayStructure;
+}
+
+/** What `toPatch()` returns: per-field entries (existing rows and plain fields) plus at most one structure entry per declared array. */
+export type FormPatchEntry = FormPatch | FormStructurePatch;
+
 export interface Form {
     /** Get a field's reactive state by path (dotted paths supported for nesting). A path not declared in `initialValues` is created lazily on first access; a lazy field allocated while a tracking context is live is created inside the form's own `registry.createRoot()`, so it survives effect re-runs (safe as of lite-signal 1.5.0). */
     field(path: string): Field;
+    /** Reactive handle for a declared array (v1.4.0). @throws {TypeError} for a path not declared in `config.arrays`. */
+    array(path: string): ArrayHandle;
     /** Snapshot of all current values (untracked). Materialized by an own-key walk: baseline branches plus a per-field deep copy of each leaf, so the returned tree never aliases the form's internal state. An uncopyable runtime value (a leaf that was `set()` to a function/Map/Set/RegExp/TypedArray/class instance/symbol, or a cycle) throws a `TypeError` naming its path. */
     values(): Record<string, any>;
     /** Batch-set values by path: `setValues({ email: "x", "user.name": "y" })`. */
@@ -164,8 +243,8 @@ export interface Form {
     reset(): void;
     /** Fold dirty values into the baseline (committed values are deep-copied through the whitelist), leaving every field pristine and `reset()` targeting the committed state. With `path`, commits just that field. A set-back-to-initial field is not written. @throws {TypeError} for a `path` no field was ever created for -- a typo'd commit is loud, never a lazy field creation. */
     commit(path?: string): void;
-    /** List exactly the dirty paths as `[{ path, from, to }]` (`from` = baseline value, `to` = current). Untracked and read-only -- safe to call inside an effect. */
-    toPatch(): FormPatch[];
+    /** List exactly the dirty paths as `[{ path, from, to }]` (`from` = baseline value, `to` = current), plus at most one `{ path, structure }` entry per structurally-dirty declared array. Entries never overlap: an added row rides `structure.added` with its full value and emits no field entries. Untracked and read-only -- safe to call inside an effect. */
+    toPatch(): FormPatchEntry[];
     /**
      * Re-seed the form. 1-arg `reinitialize(next)` re-seeds like `initialValues`
      * and DROPS every edit: `next` is validated and deep-copied atomically BEFORE
@@ -182,6 +261,11 @@ export interface Form {
      * so `reset()`/`toPatch()` target it. Atomic: validate+copy and the verdict
      * pre-scan run with NO mutation, so a hostile leaf or a throwing `policy`
      * leaves the form untouched. Submit state is never written by the merge.
+     *
+     * With declared arrays (v1.4.0): 1-arg re-seeds each declared array fully
+     * (keys re-derived from `next`, all row state cleared, order adopted);
+     * the 2-arg MERGE throws a `TypeError` on a form with declared field
+     * arrays -- keyed row merge is a recorded future design.
      */
     reinitialize(next: Record<string, any>, policy?: MergePolicy): void;
     /** Source mode: drop every overlay the `policy` confirms against the current source value (default `Object.is`); conflicts stay masked. A near-no-op in default mode. */

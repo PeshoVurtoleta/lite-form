@@ -1,5 +1,95 @@
 # Changelog
 
+## Unreleased
+
+Field arrays (S4) -- keyed rows with preserved identity, the ROADMAP's last
+declared promise (LF-08). Additive: a form with no `arrays` config takes the
+1.3.0 paths byte-for-byte (shipping-run t6 floors: dotted 0.113, schema
+113.440, asyncKeystroke 629.703 B/op -- unchanged). Gate verdict recorded in
+decisions/0004-field-arrays.md: lite-map 1.4.1 is ineligible as the backing
+(its lite-signal peer is the pre-release ^1.6.0-beta-1 while lite-form ships
+on stable ^1.5.0), so S4 ships an internal keyed-row helper on the S2 engine;
+a lite-map adapter is a recorded follow-up.
+
+### Added
+- `arrays` config block: `{ "<path>": { key(item, i), validators?,
+  validatorsAsync?, asyncSources?, fieldOpts? } }` -- opt-in keyed rows per
+  array path (the path must resolve to an Array in `initialValues`).
+  Sub-config is keyed by sub-path within a row; row validator ctx gains
+  `local(sub)` (tracked sibling read within the same row). Key law: derived
+  once per row per seed/add/re-seed, non-empty string, no ".", hostile
+  segments rejected, duplicates throw.
+- `form.array(path) -> ArrayHandle`: `keys()` (tracked frozen snapshot, new
+  instance exactly once per structural mutation), `length()`,
+  `structureDirty()`, `row(key) -> { key, field(sub) }` (identity-stable;
+  the same Field as the keyed path `"<path>.<key>.<sub>"`),
+  `add(item, atIndex?) -> key`, `remove(key)`, `move(key, toIndex)`.
+  Fail-closed doors: undeclared path, unknown key, bad index, index-segment
+  or whole-array addressing on a declared array (one addressing model per
+  path -- the mixed-addressing overlap hazard is structurally dead there).
+  Single-leaf rows (primitive/array/Date items) have exactly one field,
+  addressed with no sub segment; a named sub under one -- or an empty sub on
+  an object row -- throws instead of silently dropping from snapshots.
+- Patch structure entries: `toPatch()` / `submit(ev, {patch: true})` emit one
+  `{ path, structure: { order, added: [{key, index, value}], removed } }`
+  entry per structurally-dirty array; added rows carry their full value there
+  and never emit field entries (entries cannot overlap). d.ts: `ArrayConfig`,
+  `ArrayHandle`, `Row`, `RowFieldContext`, `ArrayStructure`,
+  `FormStructurePatch`, `FormPatchEntry` union.
+- Row lifecycle: eager per baseline row, per-row createRoot ownership;
+  `remove()` disposes the row's signals and async lanes FIRST (an in-flight
+  settlement becomes a no-op; a PENDING lane releases its form-level
+  isValidating slot), then reclaims projection slots (`prune()`).
+  Distinct-key add/remove churn is activeNodes-flat under the gate.
+- Merge semantics with arrays: 1-arg `reinitialize` re-seeds declared arrays
+  fully (keys re-derived, atomic); the 2-arg merge throws on a form with
+  declared arrays (keyed row merge is the recorded next design); `source` +
+  `arrays` throws at construction (no keyed baseline in source mode).
+- Schema mode: declared arrays materialize in order in the scratch tree;
+  index-based schema error keys translate index -> key inside the same
+  computed run (zero work when no arrays are declared).
+- Torture: new t10-arrays tier (reorder purity via instrumented counters,
+  keyed identity soak, remove-mid-flight teardown, re-seed atomicity); t5
+  fuzz gains keyed-row ops against an independently-keyed mirror; t6 gains a
+  GATED rowKeystroke window (0.119 B/op measured, <= 16384 B / 50K ops) and
+  RECORDED structure windows (add+remove pair 8,855 B/op, move 294 B/op); t7
+  gains the distinct-key churn phase; two new t9 controls (rowident,
+  slotleak) prove the identity and slot-reclaim laws can fail. 26 new tests
+  bring the suite to 144.
+
+### Fixed
+- LF-13 (caught by this session's own extended fuzz BEFORE release -- never
+  shipped): teardown without a notifier. (a) `isValid` short-circuits, so its
+  memoized verdict could hold exactly one live dependency -- a row field's
+  `rawError`; removing that row disposed the dependency and orphaned the
+  computed at a stale `false` forever (the LF-12 class, transposed to the
+  validity lane). It now tracks each declared array's structure revision.
+  (b) A row async lane torn down while PENDING never released the form-level
+  `pendingCount` slot (its settlement returns on the dead-lane guard before
+  the normal decrement), leaving `isValidating()` stuck true and `isValid`
+  strict-false. `teardownRow` now releases the slot. Two regression tests.
+
+### Changed
+- Benchmark records refreshed to Node 26 measured numbers (they had aged
+  conservative on Node 22): keystroke ~1.5M -> ~6.1M ops/s, speedup over the
+  handwritten pattern 8x -> ~15x, schema keystroke ~30K -> ~83K ops/s
+  (~12 us), cross-field ~5M -> ~21M ops/s, create+dispose large ~1.3K ->
+  ~3.8K ops/s. Size line corrected: 621 lines / ~6.4 KB minified (a pre-S3
+  record) -> 1,565 lines / ~21 KB minified. One remaining "lite-project only
+  in engine mode" sentence in the README positioning section corrected (the
+  import is static; both modes need the peer). package.json description
+  deliberately untouched this release.
+- `toPatch()` / patch-mode `onSubmit` are typed `FormPatchEntry[]` (the
+  field-entry shape is unchanged; structure entries are new and appear only
+  for declared arrays).
+- `reconcile(policy)` now runs the policy under the merge purity latch: a
+  mutating form call from inside the policy throws the existing latch
+  `TypeError` instead of silently corrupting the engine's overlay scan
+  (previously fail-open; the reconcile window is also the one latch window
+  reachable on a declared-arrays form, so the row API guards --
+  add/remove/move and lazy row-field creation -- fire there). Behaviour
+  change from fail-open to fail-closed, per the suite's brand.
+
 ## 1.3.0 - 2026-09-06
 
 Server-data story (S3). Three flows, additive on the S2 engine seam: merge
