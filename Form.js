@@ -1,6 +1,6 @@
 /**
  * @zakkster/lite-form -- headless reactive forms for @zakkster/lite-signal
- * v1.2.0
+ * v1.3.0
  * -----------------------------------------------------------------------------
  * Form STATE as fine-grained signals. No DOM, no virtual DOM, no compiler -- bind
  * the field signals with @zakkster/lite-signal-dom (or anything). The only hard
@@ -73,7 +73,7 @@ import {
 } from "@zakkster/lite-signal";
 import { createProjector, fromAccessors, fromProxy } from "@zakkster/lite-project";
 
-export const VERSION = "1.2.0";
+export const VERSION = "1.3.0";
 
 const NULL = () => null;                                  // shared "no validator" error source
 const EMPTY = {};                                         // shared empty errors / opts

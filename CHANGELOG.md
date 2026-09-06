@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 - 2026-09-06
 
 Server-data story (S3). Three flows, additive on the S2 engine seam: merge
 reinitialize, per-field async validation, dirty-only patch submit. The 1-arg
