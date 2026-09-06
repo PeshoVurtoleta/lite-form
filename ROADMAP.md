@@ -385,7 +385,7 @@ DONE WHEN
 ---
 package: "@zakkster/lite-form"
 version_target: 1.3.0
-status: planned
+status: shipped (2026-09-06 -- server-data story shipped as v1.3.0: merge reinitialize(next, policy) with atomic pre-scanned verdicts + the re-entrancy purity latch; validatorsAsync/asyncSources lane (stale settlements dropped whole, isValid strict-false while pending, per-field+form isValidating, debounce = lite-debounce recipe); submit(ev, {patch:true}); reconcile ships, source-mode 2-arg reinitialize throws; server errors stay the recipe. Bonus: LF-12 found+fixed (cached dirty() stranded across value-preserving commit/echo -- latent since 1.2.0). Suite 77 -> 118; gate dotted=0.093 schema=113.44 asyncKeystroke=629.7 B/op recorded; feat 307e1cc, bump 739eb91; see decisions/0003-server-data.md)
 findings: [LF-09, LF-10]
 depends_on: [S2]
 ---
