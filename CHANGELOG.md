@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.4.0 - 2026-09-06
 
 Field arrays (S4) -- keyed rows with preserved identity, the ROADMAP's last
 declared promise (LF-08). Additive: a form with no `arrays` config takes the
